@@ -10,11 +10,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// pipelineColor renders a pipeline name
-var pipelineColor = color.New(color.FgRed).SprintFunc()
+// pipelineColor renders a pipeline name in green.
+var pipelineColor = color.New(color.FgGreen).SprintFunc()
 
 // stepColor renders a step name in yellow.
-var stepColor = color.New(color.FgGreen).SprintFunc()
+var stepColor = color.New(color.FgYellow).SprintFunc()
 
 // progressColor renders a progress step in yellow.
 var progressColor = color.New(color.FgYellow).SprintFunc()
@@ -22,12 +22,14 @@ var progressColor = color.New(color.FgYellow).SprintFunc()
 // levelColor returns a coloring function appropriate for the log level.
 var levelColor = func(level logrus.Level) func(...interface{}) string {
 	switch level {
-	case logrus.DebugLevel, logrus.TraceLevel:
-		return color.New(color.FgWhite).SprintFunc()
+	case logrus.TraceLevel:
+		return color.New(color.Faint, color.FgWhite).SprintFunc()
+	case logrus.DebugLevel:
+		return color.New(color.Faint, color.FgCyan).SprintFunc()
 	case logrus.WarnLevel:
-		return color.New(color.FgYellow, color.Bold).SprintFunc()
+		return color.New(color.FgYellow).SprintFunc()
 	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
-		return color.New(color.FgRed, color.Bold).SprintFunc()
+		return color.New(color.FgRed).SprintFunc()
 	default: // Info
 		return color.New(color.FgCyan).SprintFunc()
 	}
@@ -45,7 +47,7 @@ type PipelineFormatter struct{}
 func (f *PipelineFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	var b bytes.Buffer
 
-	lvl := fmt.Sprintf("%4s", strings.ToUpper(entry.Level.String()))
+	lvl := strings.ToUpper(entry.Level.String())[:4]
 	paint := levelColor(entry.Level)
 	fmt.Fprintf(&b, "%s[%s]", paint(lvl), entry.Time.Format("15:04:05"))
 
