@@ -1,17 +1,77 @@
 package pipelines
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 )
 
-// pipelineColor renders a pipeline name in green.
-var pipelineColor = color.New(color.FgYellow).SprintFunc()
+// pipelineColor renders a pipeline name
+var pipelineColor = color.New(color.FgRed).SprintFunc()
 
 // stepColor renders a step name in yellow.
 var stepColor = color.New(color.FgGreen).SprintFunc()
+
+// progressColor renders a progress step in yellow.
+var progressColor = color.New(color.FgYellow).SprintFunc()
+
+// levelColor returns a coloring function appropriate for the log level.
+var levelColor = func(level logrus.Level) func(...interface{}) string {
+	switch level {
+	case logrus.DebugLevel, logrus.TraceLevel:
+		return color.New(color.FgWhite).SprintFunc()
+	case logrus.WarnLevel:
+		return color.New(color.FgYellow, color.Bold).SprintFunc()
+	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
+		return color.New(color.FgRed, color.Bold).SprintFunc()
+	default: // Info
+		return color.New(color.FgCyan).SprintFunc()
+	}
+}
+
+// PipelineFormatter is a logrus.Formatter that renders entries in the layout:
+//
+//	LEVEL[time] (pipeline) (step) (progress) message  key=val …
+//
+// The fields "pipeline", "step", and "progress" are consumed from the entry's
+// Data map and never printed as trailing key=value pairs. All other fields are
+// appended after the message in key=value form.
+type PipelineFormatter struct{}
+
+func (f *PipelineFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	var b bytes.Buffer
+
+	lvl := fmt.Sprintf("%4s", strings.ToUpper(entry.Level.String()))
+	paint := levelColor(entry.Level)
+	fmt.Fprintf(&b, "%s[%s]", paint(lvl), entry.Time.Format("15:04:05"))
+
+	if pipeline, ok := entry.Data["pipeline"].(string); ok && pipeline != "" {
+		fmt.Fprintf(&b, "(%s)", pipelineColor(pipeline))
+	}
+	if step, ok := entry.Data["step"].(string); ok && step != "" {
+		fmt.Fprintf(&b, "(%s)", stepColor(step))
+	}
+	if progress, ok := entry.Data["progress"].(string); ok && progress != "" {
+		fmt.Fprintf(&b, "(%s)", progressColor(progress))
+	}
+
+	fmt.Fprintf(&b, " %s", entry.Message)
+
+	// Append any remaining fields as key=value pairs.
+	for k, v := range entry.Data {
+		if k == "pipeline" || k == "step" || k == "progress" {
+			continue
+		}
+		fmt.Fprintf(&b, "  %s=%v", k, v)
+	}
+
+	b.WriteByte('\n')
+	return b.Bytes(), nil
+}
 
 type loggerKeyType struct{}
 
@@ -28,17 +88,13 @@ func LoggerFromContext(ctx context.Context) *logrus.Logger {
 	return nil
 }
 
-// progressHook is a logrus hook attached while a MultiSpinner is active.
-// On every log entry it:
-//  1. Snapshots the spinner's running items and appends them as a "running" field.
-//  2. Clears the spinner line from the terminal so the log line prints cleanly above it.
+// progressHook clears the spinner line before each log entry so text always
+// lands above the spinner.
 type progressHook struct {
 	ms *MultiSpinner
 }
 
-func (h *progressHook) Levels() []logrus.Level {
-	return logrus.AllLevels
-}
+func (h *progressHook) Levels() []logrus.Level { return logrus.AllLevels }
 
 func (h *progressHook) Fire(entry *logrus.Entry) error {
 	h.ms.mu.Lock()
