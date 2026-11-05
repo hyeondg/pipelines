@@ -71,8 +71,6 @@ func (c *Command) Execute(ctx context.Context, sw *StepWriter) error {
 	}
 	execCmd.WaitDelay = 5 * time.Second
 	err := execCmd.Run()
-	// Flush any buffered output regardless of success or failure.
-	_ = sw.Flush()
 	return err
 }
 
