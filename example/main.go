@@ -2,12 +2,13 @@
 //
 // It builds three pipelines:
 //
-//  1. "build"   – compiles the project with `go build`.
-//  2. "verify"  – runs vet and tests concurrently, with retry on the test step.
-//  3. "report"  – a pure-Go FuncStep that prints a summary.
+//  1. "build"   - compiles the project with `go build`.
+//  2. "verify"  - runs vet and tests concurrently, with retry on the test step.
+//  3. "report"  - a pure-Go FuncStep that prints a summary.
 //
 // Pipelines 1 and 2 are executed sequentially (build must pass before verify).
 // A second run then executes all three concurrently to show RunPipelinesConcurrently.
+// A third demo runs two pipelines concurrently, each writing its output to a log file.
 //
 // Run from the repo root:
 //
@@ -36,7 +37,7 @@ func main() {
 	// Inject a shared logrus logger so every pipeline step writes structured logs.
 	log := logrus.New()
 	log.SetOutput(os.Stdout)
-	log.SetFormatter(&logrus.TextFormatter{})
+	log.SetFormatter(&pipelines.PipelineFormatter{})
 	log.SetLevel(logrus.InfoLevel)
 	ctx = pipelines.ContextWithLogger(ctx, log)
 
@@ -180,4 +181,51 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// -------------------------------------------------------------------------
+	// Demo C: two pipelines running concurrently, each writing to its own log file.
+	// -------------------------------------------------------------------------
+	fmt.Println("\n=== Demo C: concurrent pipelines with per-pipeline log files ===")
+
+	logDir, err := os.MkdirTemp("", "pipelines-demo-c-*")
+	if err != nil {
+		log.WithError(err).Fatal("failed to create log dir")
+	}
+
+	// slowStep returns a FuncStep that writes several lines with pauses between
+	// them so the two pipelines genuinely overlap in time.
+	slowStep := func(name, tag string) *pipelines.FuncStep {
+		return &pipelines.FuncStep{
+			Name:        name,
+			Description: "writes output slowly to demonstrate concurrent log files",
+			Fn: func(_ context.Context, sw *pipelines.StepWriter) error {
+				for i := 1; i <= 5; i++ {
+					fmt.Fprintf(sw, "%s: line %d/5\n", tag, i)
+					time.Sleep(300 * time.Millisecond)
+				}
+				return nil
+			},
+		}
+	}
+
+	alpha := pipelines.Pipeline{
+		Name:        "alpha",
+		Description: "first concurrent pipeline",
+		LogDir:      logDir,
+	}
+	alpha.AddStep(slowStep("alpha-work", "alpha"))
+
+	beta := pipelines.Pipeline{
+		Name:        "beta",
+		Description: "second concurrent pipeline",
+		LogDir:      logDir,
+	}
+	beta.AddStep(slowStep("beta-work", "beta"))
+
+	if err := pipelines.RunPipelinesConcurrently(ctx, []pipelines.Pipeline{alpha, beta}); err != nil {
+		log.WithError(err).Error("demo C failed")
+	}
+
+	fmt.Printf("\nalpha log: %s\n", alpha.GetLogFilePath())
+	fmt.Printf("beta  log: %s\n", beta.GetLogFilePath())
 }
