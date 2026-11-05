@@ -38,7 +38,7 @@ func main() {
 	log := logrus.New()
 	log.SetOutput(os.Stdout)
 	log.SetFormatter(&pipelines.PipelineFormatter{})
-	log.SetLevel(logrus.InfoLevel)
+	log.SetLevel(logrus.DebugLevel)
 	ctx = pipelines.ContextWithLogger(ctx, log)
 
 	// -------------------------------------------------------------------------

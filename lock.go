@@ -28,21 +28,23 @@ func lockTokenFromCtx(ctx context.Context) uint64 {
 	return v
 }
 
-// lockState tracks reentrant ownership for a given lock directory.
+// lockState tracks reentrant ownership for a given lock path.
+// refCount is updated atomically; owner is written once at acquisition time
+// (while no concurrent releaser can exist) so plain uint64 is fine.
 type lockState struct {
 	owner    uint64
-	refCount int
+	refCount atomic.Int32
 }
 
-var (
-	locks   = make(map[string]*lockState)
-	locksMu sync.Mutex
+// locks maps lock-file path -> *lockState.
+var locks sync.Map
 
+var (
 	lockRelease   = make(map[string]chan struct{})
 	lockReleaseMu sync.Mutex
 )
 
-// releaseChanFor returns the current wakeup channel for lockDir, creating one if absent.
+// releaseChanFor returns the current wakeup channel for lockPath, creating one if absent.
 func releaseChanFor(lockPath string) chan struct{} {
 	lockReleaseMu.Lock()
 	defer lockReleaseMu.Unlock()
@@ -54,7 +56,7 @@ func releaseChanFor(lockPath string) chan struct{} {
 	return ch
 }
 
-// resetReleaseChan replaces the wakeup channel for lockDir with a fresh one
+// resetReleaseChan replaces the wakeup channel for lockPath with a fresh one
 // so the next waiter gets a new channel to select on.
 func resetReleaseChan(lockPath string) {
 	lockReleaseMu.Lock()
@@ -62,11 +64,8 @@ func resetReleaseChan(lockPath string) {
 	lockRelease[lockPath] = make(chan struct{})
 }
 
-// configLockPath returns the lock file for symb. Each symbol gets an independent
-// lock beside its logs, preventing unrelated landscapes from blocking one another.
-// The optional argument is retained for compatibility with older callers that
-// supplied LockDirKey directly; new callers must pass a symbol.
-func configLockPath(ctx context.Context, symb string) (path string, err error) {
+// configLockPath returns the lock file path for symb.
+func configLockPath(ctx context.Context, symb string) (string, error) {
 	if len(symb) == 0 {
 		return "", fmt.Errorf("config lock: symbol must not be empty")
 	}
@@ -87,34 +86,32 @@ func AcquireConfigLock(ctx context.Context, symb string) error {
 	}
 
 	ownerToken := lockTokenFromCtx(ctx)
+
+	// Re-entrant fast path: if this owner already holds the lock, bump refCount.
 	if ownerToken != 0 {
-		locksMu.Lock()
-		state, exists := locks[lockPath]
-		if exists && state.owner == ownerToken && state.refCount > 0 {
-			state.refCount++
-			locksMu.Unlock()
-			return nil
+		if v, ok := locks.Load(lockPath); ok {
+			state := v.(*lockState)
+			if state.owner == ownerToken && state.refCount.Load() > 0 {
+				state.refCount.Add(1)
+				return nil
+			}
 		}
-		locksMu.Unlock()
 	}
 
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		var acquireErr error
 		if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 			return fmt.Errorf("acquiring config lock at %s: %w", lockPath, err)
 		}
-		var file *os.File
-		file, acquireErr = os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+
+		file, acquireErr := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if acquireErr == nil {
 			_ = file.Close()
-		}
-		if acquireErr == nil {
-			locksMu.Lock()
-			locks[lockPath] = &lockState{owner: ownerToken, refCount: 1}
-			locksMu.Unlock()
+			state := &lockState{owner: ownerToken}
+			state.refCount.Store(1)
+			locks.Store(lockPath, state)
 			resetReleaseChan(lockPath)
 			return nil
 		}
@@ -140,20 +137,23 @@ func ReleaseConfigLock(ctx context.Context, symb string) error {
 	}
 
 	ownerToken := lockTokenFromCtx(ctx)
-	locksMu.Lock()
-	defer locksMu.Unlock()
 
-	state, exists := locks[lockPath]
-	if !exists || state.refCount <= 0 {
+	v, ok := locks.Load(lockPath)
+	if !ok {
+		return fmt.Errorf("releasing config lock at %s: lock not held", lockPath)
+	}
+	state := v.(*lockState)
+
+	if state.refCount.Load() <= 0 {
 		return fmt.Errorf("releasing config lock at %s: lock not held", lockPath)
 	}
 	if ownerToken != 0 && state.owner != ownerToken {
-		return fmt.Errorf("releasing config lock at %s: not owned by this context (owner token: %d, caller token: %d)", lockPath, state.owner, ownerToken)
+		return fmt.Errorf("releasing config lock at %s: not owned by this context (owner token: %d, caller token: %d)",
+			lockPath, state.owner, ownerToken)
 	}
 
-	state.refCount--
-	if state.refCount == 0 {
-		delete(locks, lockPath)
+	if state.refCount.Add(-1) == 0 {
+		locks.Delete(lockPath)
 		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("releasing config lock at %s: %w", lockPath, err)
 		}
