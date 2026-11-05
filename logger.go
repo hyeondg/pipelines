@@ -8,10 +8,10 @@ import (
 )
 
 // pipelineColor renders a pipeline name in green.
-var pipelineColor = color.New(color.FgGreen).SprintFunc()
+var pipelineColor = color.New(color.FgYellow).SprintFunc()
 
 // stepColor renders a step name in yellow.
-var stepColor = color.New(color.FgYellow).SprintFunc()
+var stepColor = color.New(color.FgGreen).SprintFunc()
 
 type loggerKeyType struct{}
 
