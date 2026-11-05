@@ -147,10 +147,8 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 		default:
 			spinner.Add(p.Name + "/" + step.StepName())
 		}
-		sw := newStepWriter(sinkW, mu)
+		sw := newStepWriter(sinkW, mu, p.Name, step.StepName())
 		err := step.Execute(stepCtx, sw)
-		// Flush any buffered output that the step did not flush itself.
-		_ = sw.Flush()
 		spinner.Remove(p.Name + "/" + step.StepName())
 		if err != nil {
 			if !p.NoSpinner && ownsSpinner {
