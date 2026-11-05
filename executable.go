@@ -57,9 +57,10 @@ func (c *Command) Execute(ctx context.Context, sw *StepWriter) error {
 	args := c.BuildArgs()
 	if l := LoggerFromContext(ctx); l != nil {
 		l.WithFields(logrus.Fields{
+			"step":       c.Name,
 			"executable": c.Executable,
 			"args":       strings.Join(args, " "),
-		}).Debugf("[%s] executing command", stepColor(c.Name))
+		}).Debug("executing command")
 	}
 	execCmd := exec.CommandContext(ctx, c.Executable, args...)
 	// Route subprocess output through the StepWriter buffer so that output is
