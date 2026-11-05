@@ -9,8 +9,6 @@ import (
 
 // FuncStep represents an arbitrary Go function as a pipeline step.
 // The function receives a context for cancellation and a StepWriter for output.
-// Write to sw freely (buffered, never interleaved); call sw.Flush() to emit a
-// logically complete chunk atomically.
 type FuncStep struct {
 	Name        string
 	Description string
@@ -84,7 +82,7 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 			}
 			// Each goroutine gets its own StepWriter sharing the parent mutex so
 			// that Flush calls are serialised against all other concurrent siblings.
-			childSW := newStepWriter(sw.w, sw.mu)
+			childSW := newStepWriter(sw.w, sw.mu, pipelineNameFromContext(ctx), step.StepName())
 			if l := LoggerFromContext(subCtx); l != nil {
 				l.Debugf("[%s] starting sub-step", stepColor(step.StepName()))
 			}
@@ -95,8 +93,6 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 				}
 				errChan <- fmt.Errorf("sub-step '%s': %w", step.StepName(), err)
 			} else {
-				// Flush any remaining buffered output before marking the step done.
-				_ = childSW.Flush()
 				if l := LoggerFromContext(subCtx); l != nil {
 					l.Infof("[%s] sub-step completed", stepColor(step.StepName()))
 				}
