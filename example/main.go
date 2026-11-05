@@ -109,11 +109,10 @@ func main() {
 				fmt.Fprintf(sw, "\n[%s] starting...\n", label)
 				fmt.Fprintln(sw, "+------------------------------+")
 				fmt.Fprintf(sw, "|  %-28s|\n", label)
-				time.Sleep(delay) // sleep inside the buffer -- output still not visible yet
+				time.Sleep(delay)
 				fmt.Fprintf(sw, "|  result: %-20s|\n", symbol)
 				fmt.Fprintln(sw, "+------------------------------+")
-				// Flush emits the entire box atomically under the shared lock.
-				return sw.Flush()
+				return nil
 			},
 		}
 	}
