@@ -7,35 +7,62 @@ import (
 	"sync"
 )
 
-// StepWriter is the single output handle passed to every Execute call.
-// Writes accumulate in an internal buffer and are never visible to other steps
-// until Flush is called. Flush acquires the shared lock, copies the buffer to
-// the real writer atomically, then resets the buffer — guaranteeing that
-// everything written between two Flush calls arrives contiguously with no
-// interleaving from concurrent siblings.
+// StepWriter is the output handle passed to every Execute call.
+// Every Write acquires a shared lock so concurrent steps never interleave output.
+// Each line is automatically prefixed with "[pipeline/step] " so all output is
+// attributed without the step function needing to know its own name.
 type StepWriter struct {
-	mu  *sync.Mutex
-	w   io.Writer
-	buf bytes.Buffer
+	mu     *sync.Mutex
+	w      io.Writer
+	prefix []byte // prepended to every line
 }
 
-// Write appends p to the internal buffer. It never blocks on the shared lock.
+// New creates a StepWriter that writes to w. When multiple StepWriters share
+// the same *sync.Mutex, their writes are serialised against each other.
+func New(w io.Writer) *StepWriter {
+	return &StepWriter{w: w, mu: new(sync.Mutex)}
+}
+
+// Write serialises p to the underlying writer under the shared lock, prepending
+// the configured prefix to every newline-delimited line.
 func (sw *StepWriter) Write(p []byte) (int, error) {
-	return sw.buf.Write(p)
-}
-
-// Flush atomically writes the buffered content to the underlying writer and
-// resets the buffer. Call it whenever a logically complete chunk of output
-// (a status line, a multi-line block, etc.) is ready to be displayed.
-func (sw *StepWriter) Flush() error {
-	if sw.buf.Len() == 0 {
-		return nil
-	}
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	_, err := sw.buf.WriteTo(sw.w)
-	return err
+	if len(sw.prefix) == 0 {
+		return sw.w.Write(p)
+	}
+	// Prepend prefix to each line. We iterate over newline boundaries so that a
+	// single Write call containing multiple lines gets every line prefixed.
+	total := len(p)
+	for len(p) > 0 {
+		idx := bytes.IndexByte(p, '\n')
+		var line []byte
+		if idx >= 0 {
+			line = p[:idx+1] // includes the '\n'
+			p = p[idx+1:]
+		} else {
+			line = p
+			p = nil
+		}
+		// Skip prefix-only lines (bare newlines from spacing).
+		if len(bytes.TrimSpace(line)) == 0 {
+			if _, err := sw.w.Write(line); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		if _, err := sw.w.Write(sw.prefix); err != nil {
+			return 0, err
+		}
+		if _, err := sw.w.Write(line); err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
 }
+
+// Flush is a no-op retained for API compatibility.
+func (sw *StepWriter) Flush() error { return nil }
 
 type stepWriterKeyType struct{}
 
@@ -82,9 +109,11 @@ func pipelineNameFromContext(ctx context.Context) string {
 	return name
 }
 
-// newStepWriter creates a StepWriter that flushes to w under mu.
-func newStepWriter(w io.Writer, mu *sync.Mutex) *StepWriter {
-	return &StepWriter{w: w, mu: mu}
+// newStepWriter creates a StepWriter that writes to w under mu, prefixing every
+// line with "[pipelineName/stepName] ".
+func newStepWriter(w io.Writer, mu *sync.Mutex, pipeline, step string) *StepWriter {
+	prefix := "[" + pipelineColor(pipeline) + "/" + stepColor(step) + "] "
+	return &StepWriter{w: w, mu: mu, prefix: []byte(prefix)}
 }
 
 // Step is the interface that all pipeline steps must satisfy.
