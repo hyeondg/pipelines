@@ -11,13 +11,13 @@ import (
 )
 
 // pipelineColor renders a pipeline name in green.
-var pipelineColor = color.New(color.FgGreen).SprintFunc()
+var pipelineColor = color.New(color.FgRed).SprintFunc()
 
 // stepColor renders a step name in yellow.
 var stepColor = color.New(color.FgYellow).SprintFunc()
 
 // progressColor renders a progress step in yellow.
-var progressColor = color.New(color.FgYellow).SprintFunc()
+var progressColor = color.New(color.FgGreen).SprintFunc()
 
 // levelColor returns a coloring function appropriate for the log level.
 var levelColor = func(level logrus.Level) func(...interface{}) string {
