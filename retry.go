@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codeGROOVE-dev/retry"
+	"github.com/sirupsen/logrus"
 )
 
 // RetryStep wraps any Step and re-executes it on failure using the
@@ -47,7 +48,11 @@ func (r *RetryStep) Execute(ctx context.Context, sw *StepWriter) error {
 	opts = append(opts, r.Opts...)
 	opts = append(opts, retry.OnRetry(func(attempt uint, err error) {
 		if l := LoggerFromContext(ctx); l != nil {
-			l.WithError(err).Warnf("[%s] attempt %d failed, retrying", stepColor(r.Step.StepName()), attempt+1)
+			l.WithFields(logrus.Fields{
+				"step":    r.Step.StepName(),
+				"attempt": fmt.Sprintf("%d", attempt+1),
+				"error":   err,
+			}).Warn("step failed, retrying")
 		}
 	}))
 
