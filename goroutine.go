@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 // FuncStep represents an arbitrary Go function as a pipeline step.
@@ -84,17 +86,27 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 			// that Flush calls are serialised against all other concurrent siblings.
 			childSW := newStepWriter(sw.w, sw.mu, pipelineNameFromContext(ctx), step.StepName())
 			if l := LoggerFromContext(subCtx); l != nil {
-				l.Debugf("[%s] starting sub-step", stepColor(step.StepName()))
+				l.WithFields(logrus.Fields{
+					"pipeline": pipelineNameFromContext(ctx),
+					"step":     step.StepName(),
+				}).Debug("starting sub-step")
 			}
 			if err := step.Execute(subCtx, childSW); err != nil {
 				cancel() // cancel siblings
 				if l := LoggerFromContext(subCtx); l != nil {
-					l.WithError(err).Errorf("[%s] sub-step failed", stepColor(step.StepName()))
+					l.WithFields(logrus.Fields{
+						"pipeline": pipelineNameFromContext(ctx),
+						"step":     step.StepName(),
+						"error":    err,
+					}).Error("sub-step failed")
 				}
 				errChan <- fmt.Errorf("sub-step '%s': %w", step.StepName(), err)
 			} else {
 				if l := LoggerFromContext(subCtx); l != nil {
-					l.Infof("[%s] sub-step completed", stepColor(step.StepName()))
+					l.WithFields(logrus.Fields{
+						"pipeline": pipelineNameFromContext(ctx),
+						"step":     step.StepName(),
+					}).Info("sub-step completed")
 				}
 			}
 			spinner.Remove(pipelineNameFromContext(ctx) + "/" + step.StepName())
