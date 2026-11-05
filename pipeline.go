@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fatih/color"
+	"github.com/sirupsen/logrus"
 )
 
 // Pipeline orchestrates a sequence of Steps.
@@ -125,7 +125,7 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 	}
 
 	if l != nil {
-		l.Infof("[%s] pipeline started", pipelineColor(p.Name))
+		l.WithField("pipeline", p.Name).Info("pipeline started")
 	}
 
 	for i, step := range p.Steps {
@@ -134,12 +134,19 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 				spinner.Stop()
 			}
 			if l != nil {
-				l.WithError(err).Warnf("[%s] pipeline cancelled before all steps completed", pipelineColor(p.Name))
+				l.WithFields(logrus.Fields{
+					"pipeline": p.Name,
+					"error":    err,
+				}).Warn("pipeline cancelled")
 			}
 			return fmt.Errorf("pipeline '%s' cancelled: %w", p.Name, err)
 		}
 		if l != nil {
-			l.Debugf("[%s] running step %s (%d/%d)", pipelineColor(p.Name), stepColor(step.StepName()), i+1, len(p.Steps))
+			l.WithFields(logrus.Fields{
+				"pipeline": p.Name,
+				"step":     step.StepName(),
+				"progress": fmt.Sprintf("%d/%d", i+1, len(p.Steps)),
+			}).Debug("running step")
 		}
 		switch step.(type) {
 		case *ConcurrentStep:
@@ -156,17 +163,28 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 			}
 			if ctx.Err() != nil {
 				if l != nil {
-					l.Warnf("[%s] step %s interrupted by signal", pipelineColor(p.Name), stepColor(step.StepName()))
+					l.WithFields(logrus.Fields{
+						"pipeline": p.Name,
+						"step":     step.StepName(),
+					}).Warn("step interrupted by signal")
 				}
 				return fmt.Errorf("pipeline '%s' interrupted during '%s': %w", p.Name, step.StepName(), ctx.Err())
 			}
 			if l != nil {
-				l.WithError(err).Errorf("[%s] step %s failed", pipelineColor(p.Name), stepColor(step.StepName()))
+				l.WithFields(logrus.Fields{
+					"pipeline": p.Name,
+					"step":     step.StepName(),
+					"error":    err,
+				}).Error("step failed")
 			}
 			return fmt.Errorf("step '%s' failed: %w", step.StepName(), err)
 		}
 		if l != nil {
-			l.Infof("[%s] step %s completed (%d/%d)", pipelineColor(p.Name), stepColor(step.StepName()), i+1, len(p.Steps))
+			l.WithFields(logrus.Fields{
+				"pipeline": p.Name,
+				"step":     step.StepName(),
+				"progress": fmt.Sprintf("%d/%d", i+1, len(p.Steps)),
+			}).Info("step completed")
 		}
 	}
 
@@ -174,7 +192,7 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 		spinner.Stop()
 	}
 	if l != nil {
-		l.Infof("[%s] pipeline finished successfully", pipelineColor(p.Name))
+		l.WithField("pipeline", p.Name).Info("pipeline finished successfully")
 	}
 	return nil
 }
@@ -243,9 +261,9 @@ func RunPipelinesConcurrentlyWithWriter(ctx context.Context, pipelines []Pipelin
 	if liveLog := LoggerFromContext(ctx); liveLog != nil {
 		names := make([]string, len(pipelines))
 		for i, p := range pipelines {
-			names[i] = pipelineColor(p.Name)
+			names[i] = p.Name
 		}
-		liveLog.Debugf("starting concurrent execution: [%s]", strings.Join(names, ", "))
+		liveLog.WithField("pipelines", strings.Join(names, ", ")).Debug("starting concurrent execution")
 	}
 
 	// A single shared mutex is injected so steps across all concurrent pipelines
@@ -290,10 +308,13 @@ func RunPipelinesConcurrentlyWithWriter(ctx context.Context, pipelines []Pipelin
 
 	l := LoggerFromContext(ctx)
 	if len(errs) > 0 {
-		l.Fatal(color.New(color.FgRed).SprintFunc()("✗ One or more pipelines failed!"))
+		if l != nil {
+			l.Error("one or more pipelines failed")
+		}
 		return fmt.Errorf("one or more pipelines failed:\n- %s", strings.Join(errs, "\n- "))
-	} else {
-		l.Info(color.New(color.FgGreen).SprintFunc()("✓ All pipelines executed successfully!"))
-		return nil
 	}
+	if l != nil {
+		l.Info("all pipelines executed successfully")
+	}
+	return nil
 }
