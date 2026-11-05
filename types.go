@@ -112,8 +112,7 @@ func pipelineNameFromContext(ctx context.Context) string {
 // newStepWriter creates a StepWriter that writes to w under mu, prefixing every
 // line with "[pipelineName/stepName] ".
 func newStepWriter(w io.Writer, mu *sync.Mutex, pipeline, step string) *StepWriter {
-	prefix := "[" + pipelineColor(pipeline) + "/" + stepColor(step) + "] "
-	return &StepWriter{w: w, mu: mu, prefix: []byte(prefix)}
+	return &StepWriter{w: w, mu: mu}
 }
 
 // Step is the interface that all pipeline steps must satisfy.
