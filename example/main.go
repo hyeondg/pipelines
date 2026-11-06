@@ -38,57 +38,91 @@ func main() {
 	log := logrus.New()
 	log.SetOutput(os.Stdout)
 	log.SetFormatter(&pipelines.PipelineFormatter{})
-	log.SetLevel(logrus.DebugLevel)
+
+	// level
+	levels := map[string]logrus.Level{
+		"1": logrus.DebugLevel,
+		"2": logrus.InfoLevel,
+		"3": logrus.WarnLevel,
+		"4": logrus.ErrorLevel,
+		"5": logrus.FatalLevel,
+		"6": logrus.PanicLevel,
+	}
+
+	level, ok := levels[os.Getenv("DEBUG")]
+	if !ok {
+		level = logrus.InfoLevel
+	}
+
+	log.SetLevel(level)
 	ctx = pipelines.ContextWithLogger(ctx, log)
 
 	// -------------------------------------------------------------------------
 	// 1. Build pipeline – single Command step.
 	// -------------------------------------------------------------------------
 	buildPipeline := pipelines.Pipeline{
-		Name:        "build",
+		Name:        "buildPipeline",
 		Description: "Compile the module",
 		LogDir:      os.TempDir(),
 	}
-	buildPipeline.AddCommand(pipelines.Command{
-		Name:        "go-build",
-		Description: "compile all packages",
-		Executable:  "go",
-		Args:        []string{"build", "./..."},
-	})
+	buildPipeline.AddCommand(
+		pipelines.Command{
+			Name:        "buildStep",
+			Description: "compile all packages",
+			Executable:  "go",
+			Args:        []string{"build", "./..."},
+		})
 
 	// -------------------------------------------------------------------------
 	// 2. Verify pipeline – vet + test run concurrently; test step has retry.
 	// -------------------------------------------------------------------------
+	tmpDir, err := os.MkdirTemp("", "gocache-")
+	if err != nil {
+		log.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	vetStep := pipelines.Command{
-		Name:        "go-vet",
+		Name:        "vetStep",
 		Description: "static analysis",
-		Executable:  "go",
-		Args:        []string{"vet", "./..."},
+		Environment: map[string]string{
+			"GOCACHE": tmpDir,
+		},
+		Executable: "go",
+		Args:       []string{"vet", "./..."}, // set GOCACHE to isolate cache
 	}
 
 	testStep := pipelines.Command{
-		Name:        "go-test",
+		Name:        "testStep",
 		Description: "run test suite",
 		Executable:  "go",
 		Args:        []string{"test", "-count=1", "./..."},
 	}
 
+	echoStep := pipelines.Command{
+		Name:        "echoStep",
+		Description: "run bash echo",
+		Executable:  "echo",
+		Args:        []string{"\"Hello, world\""},
+	}
+
 	// Wrap the test step: retry up to 3 times with a 1 s fixed delay.
 	// Pass retry.Option values directly — no wrapper config needed.
-	retryTestStep := pipelines.WithRetry(&testStep,
+	retryTestStep := pipelines.WithRetry(
+		&testStep,
 		retry.Attempts(3),
 		retry.Delay(1*time.Second),
 		retry.DelayType(retry.FixedDelay),
 	)
 
 	concurrentVerify := &pipelines.ConcurrentStep{
-		Name:        "vet-and-test",
+		Name:        "concurrent(vetStep, testStep, echoStep)",
 		Description: "run vet and tests at the same time",
-		Steps:       []pipelines.Step{&vetStep, retryTestStep},
+		Steps:       []pipelines.Step{&vetStep, &echoStep, &retryTestStep},
 	}
 
 	verifyPipeline := pipelines.Pipeline{
-		Name:        "verify",
+		Name:        "verifyPipeline",
 		Description: "Static analysis and test suite",
 		LogDir:      os.TempDir(),
 	}
@@ -119,7 +153,7 @@ func main() {
 	}
 
 	reportPipeline := pipelines.Pipeline{
-		Name:        "report",
+		Name:        "reportPipeline",
 		Description: "Print a post-run summary",
 		LogDir:      os.TempDir(),
 	}
@@ -154,26 +188,30 @@ func main() {
 	// Fresh pipeline instances so log files are recreated cleanly.
 	all := []pipelines.Pipeline{
 		{
-			Name:        "build-2",
+			Name:        "buildPipeline",
 			Description: "Compile (concurrent run)",
 			LogDir:      os.TempDir(),
 			Steps:       buildPipeline.Steps,
 		},
 		{
-			Name:        "verify-2",
+			Name:        "verifyPipeline",
 			Description: "Verify (concurrent run)",
 			LogDir:      os.TempDir(),
 			Steps:       verifyPipeline.Steps,
 		},
 		{
-			Name:        "report-2",
+			Name:        "reportPipeline",
 			Description: "Report (concurrent run)",
 			LogDir:      os.TempDir(),
 			Steps:       reportPipeline.Steps,
 		},
 	}
 
-	err := pipelines.RunPipelinesConcurrently(ctx, all, pipelines.ContinueOnError())
+	for _, pipeline := range all {
+		fmt.Println(pipeline.HelpText())
+	}
+
+	err = pipelines.RunPipelinesConcurrently(ctx, all, pipelines.ContinueOnError())
 	if err != nil {
 		// Unwrap multi-pipeline errors to decide on exit code.
 		log.WithError(err).Error("one or more concurrent pipelines failed")
@@ -209,14 +247,14 @@ func main() {
 	}
 
 	alpha := pipelines.Pipeline{
-		Name:        "alpha",
+		Name:        "alphaPipeline",
 		Description: "first concurrent pipeline",
 		LogDir:      logDir,
 	}
 	alpha.AddStep(slowStep("alpha-work", "alpha"))
 
 	beta := pipelines.Pipeline{
-		Name:        "beta",
+		Name:        "betaPipeline",
 		Description: "second concurrent pipeline",
 		LogDir:      logDir,
 	}
