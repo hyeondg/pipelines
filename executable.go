@@ -3,6 +3,7 @@ package pipelines
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -24,6 +25,7 @@ type Option struct {
 type Command struct {
 	Name        string
 	Description string
+	Environment map[string]string
 	Executable  string
 	Args        []string
 	Options     []Option
@@ -57,9 +59,10 @@ func (c *Command) Execute(ctx context.Context, sw *StepWriter) error {
 	args := c.BuildArgs()
 	if l := LoggerFromContext(ctx); l != nil {
 		l.WithFields(logrus.Fields{
-			"step":       c.Name,
-			"executable": c.Executable,
-			"args":       strings.Join(args, " "),
+			"step":        c.Name,
+			"environment": c.Environment,
+			"executable":  c.Executable,
+			"args":        strings.Join(args, " "),
 		}).Debug("executing command")
 	}
 	execCmd := exec.CommandContext(ctx, c.Executable, args...)
@@ -71,6 +74,12 @@ func (c *Command) Execute(ctx context.Context, sw *StepWriter) error {
 		return execCmd.Process.Signal(syscall.SIGINT)
 	}
 	execCmd.WaitDelay = 5 * time.Second
+	// Environment variables
+	execCmd.Env = os.Environ()
+	for k, v := range c.Environment {
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
 	err := execCmd.Run()
 	return err
 }
