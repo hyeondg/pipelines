@@ -2,17 +2,6 @@
 
 A Go library for building and running structured, observable pipelines made up of discrete steps. Steps can be shell commands, Go functions, or concurrent groups — all wired together with structured logging, spinner output, retry logic, and graceful cancellation.
 
-## Features
-
-- **Sequential pipelines** — ordered list of steps that stop on first failure
-- **Concurrent steps** — run multiple steps in parallel inside a single pipeline slot, with optional concurrency cap
-- **Concurrent pipelines** — run multiple whole pipelines at the same time
-- **Retry** — wrap any step with configurable attempts, backoff, jitter, and per-error hooks
-- **Structured logging** — all status output goes through a `logrus.Logger` (injected via context or auto-created per writer)
-- **Spinner** — animated terminal progress shared across nested concurrent steps
-- **Filesystem lock** — reentrant, context-aware file lock for coordinating landscape-scoped operations
-- **Log files** — each pipeline writes a persistent log file under its `LogDir`
-
 ## Installation
 
 ```sh
@@ -32,13 +21,13 @@ flowchart TD
     S3 --> W[Wrapped Step]
 ```
 
-| Type | Description |
-|---|---|
-| `Pipeline` | Ordered container of `Step` values |
-| `Command` | Wraps an external binary (`exec.Command`) |
-| `FuncStep` | Wraps an arbitrary `func(ctx, w) error` |
-| `ConcurrentStep` | Runs a slice of steps in parallel |
-| `RetryStep` | Wraps any step with retry/backoff logic |
+| Type             | Description                               |
+| ---------------- | ----------------------------------------- |
+| `Pipeline`       | Ordered container of `Step` values        |
+| `Command`        | Wraps an external binary (`exec.Command`) |
+| `FuncStep`       | Wraps an arbitrary `func(ctx, w) error`   |
+| `ConcurrentStep` | Runs a slice of steps in parallel         |
+| `RetryStep`      | Wraps any step with retry/backoff logic   |
 
 ## Quick start
 
@@ -245,7 +234,8 @@ p.AddFunc("work", "do something", func(ctx context.Context, w io.Writer) error {
 
 ## Log files
 
-Each pipeline writes a `.log` file to its `LogDir`:
+The logs are stored under `~/.pipelines/` by default.
+To override this, set `$PIPELINES_DIR` environment variable.
 
 ```go
 p := pipelines.Pipeline{
@@ -256,11 +246,6 @@ p := pipelines.Pipeline{
 
 fmt.Println(p.GetLogFilePath()) // "/var/log/myapp/deploy.log"
 ```
-
-When `LogDir` is empty, the pipeline resolves it in this order:
-
-1. `$landscape` context value → `<landscape>/hdlogs/<name>/`
-2. A temporary directory created with `os.MkdirTemp`
 
 ## Filesystem lock
 
@@ -277,7 +262,7 @@ defer pipelines.ReleaseConfigLock(ctx, "my-service")
 // ... safe to mutate shared config ...
 ```
 
-The lock path is `$landscape/hdlogs/<symbol>/.lock`. The context must carry a `"landscape"` string value.
+The lock path is `$PIPELINES_DIR/lock`.
 
 ## Cancellation
 
@@ -308,26 +293,26 @@ go run ./example
 
 ## API reference
 
-| Symbol | Description |
-|---|---|
-| `Pipeline` | Core struct; holds steps, name, log dir |
-| `Pipeline.Run(ctx)` | Run steps sequentially, output to stdout |
-| `Pipeline.RunWithWriter(ctx, w)` | Run steps sequentially, output to w |
-| `Pipeline.AddStep(s)` | Append any `Step` |
-| `Pipeline.AddCommand(cmd)` | Append a `Command` step |
-| `Pipeline.AddFunc(name, desc, fn)` | Append a function step |
-| `Pipeline.AddFuncStep(fs)` | Append a pre-built `FuncStep` |
-| `Pipeline.HelpText()` | Human-readable summary of all steps |
-| `Pipeline.GetLogFilePath()` | Path of the pipeline's log file |
-| `RunPipelinesConcurrently(ctx, ps, opts...)` | Run multiple pipelines concurrently |
-| `ContinueOnError()` | Option: keep running after a failure |
-| `WithRetry(step, cfg)` | Wrap a step with retry logic |
-| `ContextWithLogger(ctx, log)` | Inject a logrus logger |
-| `LoggerFromContext(ctx)` | Retrieve the injected logger |
-| `WithLockToken(ctx)` | Attach a reentrancy token |
-| `AcquireConfigLock(ctx, symb)` | Acquire a filesystem lock |
-| `ReleaseConfigLock(ctx, symb)` | Release a filesystem lock |
-| `CopyFile(src, dst)` | Copy a file |
-| `RemainingTime(ts)` | Duration until an RFC3339 timestamp |
-| `RemainingTimeHuman(ts)` | Human-readable time remaining |
-| `ShorterEol(ts1, ts2)` | Return the earlier of two timestamps |
+| Symbol                                       | Description                              |
+| -------------------------------------------- | ---------------------------------------- |
+| `Pipeline`                                   | Core struct; holds steps, name, log dir  |
+| `Pipeline.Run(ctx)`                          | Run steps sequentially, output to stdout |
+| `Pipeline.RunWithWriter(ctx, w)`             | Run steps sequentially, output to w      |
+| `Pipeline.AddStep(s)`                        | Append any `Step`                        |
+| `Pipeline.AddCommand(cmd)`                   | Append a `Command` step                  |
+| `Pipeline.AddFunc(name, desc, fn)`           | Append a function step                   |
+| `Pipeline.AddFuncStep(fs)`                   | Append a pre-built `FuncStep`            |
+| `Pipeline.HelpText()`                        | Human-readable summary of all steps      |
+| `Pipeline.GetLogFilePath()`                  | Path of the pipeline's log file          |
+| `RunPipelinesConcurrently(ctx, ps, opts...)` | Run multiple pipelines concurrently      |
+| `ContinueOnError()`                          | Option: keep running after a failure     |
+| `WithRetry(step, cfg)`                       | Wrap a step with retry logic             |
+| `ContextWithLogger(ctx, log)`                | Inject a logrus logger                   |
+| `LoggerFromContext(ctx)`                     | Retrieve the injected logger             |
+| `WithLockToken(ctx)`                         | Attach a reentrancy token                |
+| `AcquireConfigLock(ctx, symb)`               | Acquire a filesystem lock                |
+| `ReleaseConfigLock(ctx, symb)`               | Release a filesystem lock                |
+| `CopyFile(src, dst)`                         | Copy a file                              |
+| `RemainingTime(ts)`                          | Duration until an RFC3339 timestamp      |
+| `RemainingTimeHuman(ts)`                     | Human-readable time remaining            |
+| `ShorterEol(ts1, ts2)`                       | Return the earlier of two timestamps     |

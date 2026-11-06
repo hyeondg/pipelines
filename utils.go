@@ -1,10 +1,30 @@
 package pipelines
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 )
+
+// PipelinesDir returns a pipelines directory path from the context,
+// falling back to the PIPELINES_DIR environment variable, or $HOME/.pipelines/.
+func PipelinesDir(ctx context.Context) string {
+	fromCtx := ctx.Value("pipelinesDir")
+	if fromCtx != nil {
+		return fromCtx.(string)
+	}
+	fromEnv := os.Getenv("PIPELINES_DIR")
+	if fromEnv != "" {
+		return fromEnv
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		panic("unreachable")
+	}
+	return filepath.Join(homeDir, ".pipelines")
+}
 
 // CopyFile copies the contents of src to dst. Returns an error on failure.
 func CopyFile(src string, dst string) error {

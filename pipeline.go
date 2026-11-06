@@ -70,15 +70,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 	// Initialize LogDir: use pre-set value, derive from context, or create a temp dir.
 	if p.LogDir == "" {
-		if baseDir, ok := ctx.Value("landscape").(string); ok && baseDir != "" {
-			p.LogDir = filepath.Join(baseDir, "hdlogs", p.Name)
-		} else {
-			tmpDir, err := os.MkdirTemp("", "hd-pipeline-*")
-			if err != nil {
-				return fmt.Errorf("failed to create temp log directory: %w", err)
-			}
-			p.LogDir = tmpDir
-		}
+		p.LogDir = filepath.Join(PipelinesDir(ctx), p.Name)
 	}
 	if err := os.MkdirAll(p.LogDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
