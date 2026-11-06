@@ -89,7 +89,7 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 				l.WithFields(logrus.Fields{
 					"pipeline": pipelineNameFromContext(ctx),
 					"step":     step.StepName(),
-				}).Debug("starting sub-step")
+				}).Debug("starting step")
 			}
 			if err := step.Execute(subCtx, childSW); err != nil {
 				cancel() // cancel siblings
@@ -98,7 +98,7 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 						"pipeline": pipelineNameFromContext(ctx),
 						"step":     step.StepName(),
 						"error":    err,
-					}).Error("sub-step failed")
+					}).Error("step failed")
 				}
 				errChan <- fmt.Errorf("sub-step '%s': %w", step.StepName(), err)
 			} else {
@@ -106,7 +106,7 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 					l.WithFields(logrus.Fields{
 						"pipeline": pipelineNameFromContext(ctx),
 						"step":     step.StepName(),
-					}).Info("sub-step completed")
+					}).Info("step completed")
 				}
 			}
 			spinner.Remove(pipelineNameFromContext(ctx) + "/" + step.StepName())

@@ -131,7 +131,7 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 					"error":    err,
 				}).Warn("pipeline cancelled")
 			}
-			return fmt.Errorf("pipeline '%s' cancelled: %w", p.Name, err)
+			return fmt.Errorf("pipeline '%s' cancelled: %w", pipelineColor(p.Name), err)
 		}
 		if l != nil {
 			l.WithFields(logrus.Fields{
@@ -160,7 +160,7 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 						"step":     step.StepName(),
 					}).Warn("step interrupted by signal")
 				}
-				return fmt.Errorf("pipeline '%s' interrupted during '%s': %w", p.Name, step.StepName(), ctx.Err())
+				return fmt.Errorf("pipeline '%s' interrupted during '%s': %w", pipelineColor(p.Name), stepColor(step.StepName()), ctx.Err())
 			}
 			if l != nil {
 				l.WithFields(logrus.Fields{
@@ -169,7 +169,7 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 					"error":    err,
 				}).Error("step failed")
 			}
-			return fmt.Errorf("step '%s' failed: %w", step.StepName(), err)
+			return fmt.Errorf("step '%s' failed: %w", stepColor(step.StepName()), err)
 		}
 		if l != nil {
 			l.WithFields(logrus.Fields{

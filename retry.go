@@ -29,8 +29,8 @@ type RetryStep struct {
 //	    retry.Delay(time.Second),
 //	    retry.DelayType(retry.FixedDelay),
 //	)
-func WithRetry(s Step, opts ...retry.Option) *RetryStep {
-	return &RetryStep{Step: s, Opts: opts}
+func WithRetry(s Step, opts ...retry.Option) RetryStep {
+	return RetryStep{Step: s, Opts: opts}
 }
 
 func (r *RetryStep) StepName() string        { return r.Step.StepName() }
@@ -57,6 +57,7 @@ func (r *RetryStep) Execute(ctx context.Context, sw *StepWriter) error {
 	}))
 
 	return retry.Do(
+
 		func() error { return r.Step.Execute(ctx, sw) },
 		opts...,
 	)
