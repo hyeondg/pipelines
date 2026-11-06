@@ -96,7 +96,7 @@ func main() {
 		Name:        "testStep",
 		Description: "run test suite",
 		Executable:  "go",
-		Args:        []string{"test", "-count=1", "./..."},
+		Args:        []string{"test", "-count=1", "."},
 	}
 
 	echoStep := pipelines.Command{
@@ -175,6 +175,8 @@ func main() {
 	if err := buildPipeline.Run(ctx); err != nil {
 		log.WithError(err).Fatal("build pipeline failed")
 	}
+
+	fmt.Println(verifyPipeline.HelpText())
 	if err := verifyPipeline.Run(ctx); err != nil {
 		// Non-fatal: show the error and continue to the concurrent demo.
 		log.WithError(err).Error("verify pipeline failed")
