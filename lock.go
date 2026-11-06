@@ -69,7 +69,7 @@ func configLockPath(ctx context.Context, symb string) (string, error) {
 	if len(symb) == 0 {
 		return "", fmt.Errorf("config lock: symbol must not be empty")
 	}
-	return filepath.Join(PipelinesDir(ctx), symb, ".lock"), nil
+	return filepath.Join(PipelinesDir(ctx), fmt.Sprintf("%s.lock", symb)), nil
 }
 
 // AcquireConfigLock acquires a filesystem-based reentrant lock for symb.
