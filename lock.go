@@ -69,15 +69,11 @@ func configLockPath(ctx context.Context, symb string) (string, error) {
 	if len(symb) == 0 {
 		return "", fmt.Errorf("config lock: symbol must not be empty")
 	}
-	if !ok || baseDir == "" {
-		return "", fmt.Errorf("config lock: missing or invalid landscape in context")
-	}
 	return filepath.Join(PipelinesDir(ctx), symb, ".lock"), nil
 }
 
 // AcquireConfigLock acquires a filesystem-based reentrant lock for symb.
-// The lock file is created at $LANDSCAPE_HOME/hdlogs/{symb}/.lock. It blocks
-// until the lock is acquired or the context is cancelled.
+// It blocks until the lock is acquired or the context is cancelled.
 func AcquireConfigLock(ctx context.Context, symb string) error {
 	lockPath, err := configLockPath(ctx, symb)
 	if err != nil {
