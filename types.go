@@ -112,7 +112,15 @@ func pipelineNameFromContext(ctx context.Context) string {
 // newStepWriter creates a StepWriter that writes to w under mu, prefixing every
 // line with "[pipelineName/stepName] ".
 func newStepWriter(w io.Writer, mu *sync.Mutex, pipeline, step string) *StepWriter {
-	return &StepWriter{w: w, mu: mu}
+	var prefix []byte
+	if pipeline != "" || step != "" {
+		label := step
+		if pipeline != "" {
+			label = pipeline + "/" + step
+		}
+		prefix = []byte("[" + label + "] ")
+	}
+	return &StepWriter{w: w, mu: mu, prefix: prefix}
 }
 
 // Step is the interface that all pipeline steps must satisfy.
@@ -121,4 +129,33 @@ type Step interface {
 	StepDescription() string
 	Execute(ctx context.Context, sw *StepWriter) error
 	HelpInfo() string
+
+	// SetPipelineName stores the owning pipeline's name so the step can
+	// report its full qualified name via FullName.
+	SetPipelineName(name string)
+
+	// FullName returns "pipelineName/stepName", or just stepName when the
+	// pipeline name has not been set yet.
+	FullName() string
+}
+
+// StepBase is a zero-size embeddable struct that satisfies the SetPipelineName
+// and FullName methods of the Step interface. Embed it in every concrete step
+// type to avoid repeating this boilerplate:
+//
+//	type MyStep struct {
+//	    pipelines.StepBase
+//	    // ...
+//	}
+type StepBase struct {
+	pipelineName string
+}
+
+func (b *StepBase) SetPipelineName(name string) { b.pipelineName = name }
+
+func (b *StepBase) FullName(stepName string) string {
+	if b.pipelineName == "" {
+		return stepName
+	}
+	return b.pipelineName + "/" + stepName
 }

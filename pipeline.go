@@ -133,6 +133,8 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 			}
 			return fmt.Errorf("pipeline '%s' cancelled: %w", pipelineColor(p.Name), err)
 		}
+		// Stamp the owning pipeline name onto the step so FullName() works.
+		step.SetPipelineName(p.Name)
 		if l != nil {
 			l.WithFields(logrus.Fields{
 				"pipeline": p.Name,
@@ -144,11 +146,11 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 		case *ConcurrentStep:
 			// ConcurrentStep manages its own spinner entries.
 		default:
-			spinner.Add(p.Name + "/" + step.StepName())
+			spinner.Add(step.FullName())
 		}
 		sw := newStepWriter(sinkW, mu, p.Name, step.StepName())
 		err := step.Execute(stepCtx, sw)
-		spinner.Remove(p.Name + "/" + step.StepName())
+		spinner.Remove(step.FullName())
 		if err != nil {
 			if !p.NoSpinner && ownsSpinner {
 				spinner.Stop()

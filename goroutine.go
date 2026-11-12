@@ -12,6 +12,7 @@ import (
 // FuncStep represents an arbitrary Go function as a pipeline step.
 // The function receives a context for cancellation and a StepWriter for output.
 type FuncStep struct {
+	StepBase
 	Name        string
 	Description string
 	Fn          func(ctx context.Context, sw *StepWriter) error
@@ -19,6 +20,7 @@ type FuncStep struct {
 
 func (f *FuncStep) StepName() string        { return f.Name }
 func (f *FuncStep) StepDescription() string { return f.Description }
+func (f *FuncStep) FullName() string        { return f.StepBase.FullName(f.Name) }
 func (f *FuncStep) Execute(ctx context.Context, sw *StepWriter) error {
 	if f.Fn == nil {
 		return fmt.Errorf("FuncStep '%s' has a nil function", f.Name)
@@ -38,6 +40,7 @@ func (f *FuncStep) HelpInfo() string {
 // or negative, all sub-steps run at once (unbounded). Use a positive value to
 // prevent goroutine explosion on large step slices.
 type ConcurrentStep struct {
+	StepBase
 	Name           string
 	Description    string
 	Steps          []Step
@@ -46,6 +49,7 @@ type ConcurrentStep struct {
 
 func (cs *ConcurrentStep) StepName() string        { return cs.Name }
 func (cs *ConcurrentStep) StepDescription() string { return cs.Description }
+func (cs *ConcurrentStep) FullName() string        { return cs.StepBase.FullName(cs.Name) }
 func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 	// Create a sub-context so we can cancel sibling steps on first failure.
 	subCtx, cancel := context.WithCancel(ctx)
@@ -63,7 +67,8 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 		defer addProgressHook(ctx, spinner)()
 	}
 	for _, s := range cs.Steps {
-		spinner.Add(pipelineNameFromContext(ctx) + "/" + s.StepName())
+		s.SetPipelineName(pipelineNameFromContext(ctx))
+		spinner.Add(s.FullName())
 	}
 
 	// sem is a semaphore channel that bounds the number of goroutines running
@@ -109,7 +114,7 @@ func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
 					}).Info("step completed")
 				}
 			}
-			spinner.Remove(pipelineNameFromContext(ctx) + "/" + step.StepName())
+			spinner.Remove(step.FullName())
 		}(s)
 	}
 	wg.Wait()

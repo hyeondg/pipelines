@@ -16,6 +16,7 @@ import (
 // do not pass retry.OnRetry(...) in opts if you want the built-in log hook to
 // fire; use the logger in context instead.
 type RetryStep struct {
+	StepBase
 	Step Step
 	Opts []retry.Option
 }
@@ -35,6 +36,7 @@ func WithRetry(s Step, opts ...retry.Option) RetryStep {
 
 func (r *RetryStep) StepName() string        { return r.Step.StepName() }
 func (r *RetryStep) StepDescription() string { return r.Step.StepDescription() }
+func (r *RetryStep) FullName() string        { return r.StepBase.FullName(r.Step.StepName()) }
 func (r *RetryStep) HelpInfo() string {
 	return fmt.Sprintf("%s [with retry]\n", r.Step.HelpInfo())
 }

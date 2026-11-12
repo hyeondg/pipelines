@@ -23,6 +23,7 @@ type Option struct {
 
 // Command represents an external command step.
 type Command struct {
+	StepBase
 	Name        string
 	Description string
 	Environment map[string]string
@@ -52,9 +53,9 @@ func (c *Command) BuildArgs() []string {
 	return args
 }
 
-// Step interface implementation for Command
 func (c *Command) StepName() string        { return c.Name }
 func (c *Command) StepDescription() string { return c.Description }
+func (c *Command) FullName() string        { return c.StepBase.FullName(c.Name) }
 func (c *Command) Execute(ctx context.Context, sw *StepWriter) error {
 	args := c.BuildArgs()
 	if l := LoggerFromContext(ctx); l != nil {
