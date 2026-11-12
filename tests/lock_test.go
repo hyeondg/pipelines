@@ -9,15 +9,15 @@ import (
 	"github.com/hyeondg/pipelines"
 )
 
-// landscape returns a context with a temp landscape dir, which configLockPath requires.
-func landscape(t *testing.T) context.Context {
+// pipelinesDir returns a context with a temp pipelines dir, which configLockPath requires.
+func pipelinesDir(t *testing.T) context.Context {
 	t.Helper()
-	return context.WithValue(context.Background(), "landscape", t.TempDir())
+	return context.WithValue(context.Background(), "pipelinesDir", t.TempDir())
 }
 
 // TestAcquireRelease is the basic happy path: acquire then release.
 func TestAcquireRelease(t *testing.T) {
-	ctx := pipelines.WithLockToken(landscape(t))
+	ctx := pipelines.WithLockToken(pipelinesDir(t))
 
 	if err := pipelines.AcquireConfigLock(ctx, "sym"); err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -30,7 +30,7 @@ func TestAcquireRelease(t *testing.T) {
 // TestReentrant verifies that the same token can acquire multiple times
 // and requires the same number of releases before the lock is freed.
 func TestReentrant(t *testing.T) {
-	base := landscape(t)
+	base := pipelinesDir(t)
 	ctx := pipelines.WithLockToken(base)
 
 	for i := 0; i < 3; i++ {
@@ -59,7 +59,7 @@ func TestReentrant(t *testing.T) {
 
 // TestReleaseUnheld verifies that releasing a lock that was never acquired returns an error.
 func TestReleaseUnheld(t *testing.T) {
-	ctx := pipelines.WithLockToken(landscape(t))
+	ctx := pipelines.WithLockToken(pipelinesDir(t))
 	if err := pipelines.ReleaseConfigLock(ctx, "sym"); err == nil {
 		t.Fatal("expected error releasing unheld lock, got nil")
 	}
@@ -68,7 +68,7 @@ func TestReleaseUnheld(t *testing.T) {
 // TestContextCancellation verifies that a blocked Acquire returns promptly
 // when the context is cancelled.
 func TestContextCancellation(t *testing.T) {
-	base := landscape(t)
+	base := pipelinesDir(t)
 	holder := pipelines.WithLockToken(base)
 	if err := pipelines.AcquireConfigLock(holder, "sym"); err != nil {
 		t.Fatalf("holder acquire: %v", err)
@@ -91,7 +91,7 @@ func TestContextCancellation(t *testing.T) {
 // TestWaiterUnblocksOnRelease verifies that a goroutine waiting on a lock
 // is unblocked promptly when the holder releases.
 func TestWaiterUnblocksOnRelease(t *testing.T) {
-	base := landscape(t)
+	base := pipelinesDir(t)
 	holder := pipelines.WithLockToken(base)
 	if err := pipelines.AcquireConfigLock(holder, "sym"); err != nil {
 		t.Fatalf("holder acquire: %v", err)
@@ -133,7 +133,7 @@ func TestWaiterUnblocksOnRelease(t *testing.T) {
 // TestConcurrentAcquire verifies that N goroutines each acquire and release
 // the lock exactly once, with no two holding it simultaneously.
 func TestConcurrentAcquire(t *testing.T) {
-	base := landscape(t)
+	base := pipelinesDir(t)
 	const n = 8
 
 	var (
@@ -184,24 +184,25 @@ func TestConcurrentAcquire(t *testing.T) {
 
 // TestEmptySymbol verifies that an empty symbol is rejected.
 func TestEmptySymbol(t *testing.T) {
-	ctx := pipelines.WithLockToken(landscape(t))
+	ctx := pipelines.WithLockToken(pipelinesDir(t))
 	if err := pipelines.AcquireConfigLock(ctx, ""); err == nil {
 		t.Fatal("expected error for empty symbol, got nil")
 	}
 }
 
-// TestMissingLandscape verifies that a missing landscape key is rejected.
+// TestMissingLandscape verifies that an empty symbol is still rejected even
+// without an explicit pipelinesDir in context (PipelinesDir falls back to home).
 func TestMissingLandscape(t *testing.T) {
 	ctx := pipelines.WithLockToken(context.Background())
-	if err := pipelines.AcquireConfigLock(ctx, "sym"); err == nil {
-		t.Fatal("expected error for missing landscape, got nil")
+	if err := pipelines.AcquireConfigLock(ctx, ""); err == nil {
+		t.Fatal("expected error for empty symbol, got nil")
 	}
 }
 
 // TestWrongOwnerCannotRelease verifies that a different token cannot release
 // a lock it does not own.
 func TestWrongOwnerCannotRelease(t *testing.T) {
-	base := landscape(t)
+	base := pipelinesDir(t)
 	owner := pipelines.WithLockToken(base)
 	other := pipelines.WithLockToken(base)
 
