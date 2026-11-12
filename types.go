@@ -19,8 +19,8 @@ type Step interface {
 }
 
 // StepWriter is the output handle passed to every Execute call. It cuts what
-// is written into lines, tags them "[pipeline/step] " and queues them on the
-// Logger. It is safe for concurrent use.
+// is written into lines, tags each with the names of its pipeline and step,
+// and queues them on the Logger. It is safe for concurrent use.
 type StepWriter struct {
 	mu             sync.Mutex
 	buf            []byte // unterminated tail of the last Write

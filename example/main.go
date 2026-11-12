@@ -1,8 +1,9 @@
 // example demonstrates the pipelines package.
 //
 // It runs "build" on its own and then "verify", "report" and "deploy"
-// concurrently. Each pipeline has its own tab in the terminal and its own log
-// file; the "all" tab and all.log carry everything.
+// concurrently. "deploy" shows the pipeline state machine. Each pipeline has
+// its own tab in the terminal and its own log file; the "all" tab and all.log
+// carry everything.
 //
 // Run from the repo root:
 //
@@ -49,8 +50,11 @@ func main() {
 		log.SetLevel(logrus.DebugLevel)
 	}
 
-	err = run(ctx, log)
+	ran, err := run(ctx, log)
 	log.Close() // in the viewer: returns once the user quits it
+	for _, p := range ran {
+		fmt.Printf("%-8s %s\n", p.Name, p.State)
+	}
 	fmt.Println("logs are in", logDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -58,7 +62,8 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, log *pipelines.Logger) error {
+// run runs the pipelines and returns them, each in its final state.
+func run(ctx context.Context, log *pipelines.Logger) ([]pipelines.Pipeline, error) {
 	// 1. build: a single command. Its pipeline policy registers callbacks; a
 	//    failure is reported and, as OnFailure says, aborts the pipeline.
 	build := pipelines.Pipeline{
@@ -122,10 +127,28 @@ func run(ctx context.Context, log *pipelines.Logger) error {
 		Steps:       []pipelines.Step{slow("checks", 400*time.Millisecond), slow("coverage", 250*time.Millisecond)},
 	})
 
-	// 4. deploy: one policy per way of handling a failure.
+	// 4. deploy: a state machine. Policies deal with single steps first; then
+	//    Transition maps what is left of each step to a state, here from its
+	//    exit code, and the jobs registered for that state are run.
 	var uploads atomic.Int32
-	deploy := pipelines.Pipeline{Name: "deploy", Description: "Failure policies"}
-	deploy.AddStep(pipelines.WithPolicy( // retry: succeeds at the third attempt
+	say := func(name, text string) *pipelines.Command {
+		return &pipelines.Command{Name: name, Description: text, Executable: "echo", Args: []string{text}}
+	}
+	deploy := pipelines.Pipeline{
+		Name:        "deploy",
+		Description: "State machine",
+		Transition: func(s pipelines.State, r pipelines.Result) pipelines.State {
+			if r.ExitCode == 3 {
+				return "degraded" // not a final state: the pipeline goes on
+			}
+			return pipelines.Next(s, r)
+		},
+	}
+	deploy.On("degraded", say("warn", "running with pending migrations"))
+	deploy.On(pipelines.Failed, say("rollback", "restoring the previous release"))
+	deploy.On(pipelines.Aborted, say("cleanup", "removing the partial upload"))
+
+	deploy.AddStep(pipelines.WithPolicy( // retried: succeeds at the third attempt
 		&pipelines.FuncStep{Name: "upload", Description: "flaky upload", Fn: func(_ context.Context, sw *pipelines.StepWriter) error {
 			if n := uploads.Add(1); n < 3 {
 				return fmt.Errorf("connection reset (attempt %d)", n)
@@ -135,19 +158,16 @@ func run(ctx context.Context, log *pipelines.Logger) error {
 		}},
 		pipelines.Policy{Retry: []retry.Option{retry.Attempts(5), retry.Delay(500 * time.Millisecond), retry.DelayType(retry.FixedDelay)}},
 	))
-	deploy.AddStep(pipelines.WithPolicy( // continue: the failure is logged and ignored
+	deploy.AddStep(pipelines.WithPolicy( // tolerated: the policy drops the failure, the state is unaffected
 		&pipelines.Command{Name: "notify", Description: "optional notification", Executable: "false"},
 		pipelines.Policy{OnFailure: pipelines.Always(pipelines.Continue)},
 	))
-	deploy.AddStep(pipelines.WithPolicy( // failure callback, then abort
-		&pipelines.FuncStep{Name: "smoke", Description: "smoke test", Fn: func(context.Context, *pipelines.StepWriter) error {
-			return errors.New("health check returned 503")
-		}},
-		pipelines.Policy{OnFailure: func(ctx context.Context, s pipelines.Step, err error) pipelines.Action {
-			pipelines.Log(ctx).Warnf("callback: rolling back after %s: %v", s.StepName(), err)
-			return pipelines.Abort
-		}},
-	))
+	deploy.AddCommand(pipelines.Command{ // exit code 3: the pipeline becomes "degraded"
+		Name: "migrate", Description: "schema migration", Executable: "sh", Args: []string{"-c", "echo 2 migrations pending; exit 3"},
+	})
+	deploy.AddFunc("smoke", "smoke test", func(context.Context, *pipelines.StepWriter) error { // any other failure: Failed
+		return errors.New("health check returned 503")
+	})
 	deploy.AddFunc("announce", "never reached", func(_ context.Context, sw *pipelines.StepWriter) error {
 		fmt.Fprintln(sw, "deployed")
 		return nil
@@ -160,8 +180,9 @@ func run(ctx context.Context, log *pipelines.Logger) error {
 
 	// Sequential: build must pass before anything else starts.
 	if err := build.Run(ctx); err != nil {
-		return err
+		return []pipelines.Pipeline{build}, err
 	}
 	// Concurrent: a failing pipeline does not stop the others.
-	return pipelines.RunPipelinesConcurrently(ctx, all, pipelines.ContinueOnError())
+	err := pipelines.RunPipelinesConcurrently(ctx, all, pipelines.ContinueOnError())
+	return append([]pipelines.Pipeline{build}, all...), err
 }

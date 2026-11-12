@@ -144,11 +144,89 @@ func TestConcurrentStep(t *testing.T) {
 		step("late", func(context.Context) error { return nil }),
 	}})
 	err := p.Run(ctx)
-	if want := "pipeline 'p': step 'group' failed: sub-step 'bad': boom"; err == nil || err.Error() != want {
+	if want := "pipeline 'p' failed at step 'group': sub-step 'bad': boom"; err == nil || err.Error() != want {
 		t.Fatalf("err=%v, want %s", err, want)
 	}
 	if peak.Load() > 2 {
 		t.Fatalf("%d sub-steps ran at once, limit is 2", peak.Load())
+	}
+}
+
+// exit returns a command step that exits with the given code.
+func exit(name string, code int) *pipelines.Command {
+	return &pipelines.Command{Name: name, Executable: "sh", Args: []string{"-c", fmt.Sprintf("exit %d", code)}}
+}
+
+// TestStateMachine checks the state after each step and the jobs that were run for it.
+func TestStateMachine(t *testing.T) {
+	byExitCode := func(s pipelines.State, r pipelines.Result) pipelines.State {
+		switch r.ExitCode {
+		case 3:
+			return "degraded" // not final: the pipeline goes on
+		case 4:
+			return pipelines.Succeeded // final: the remaining steps are skipped
+		}
+		return pipelines.Next(s, r)
+	}
+	for name, tc := range map[string]struct {
+		codes      []int // exit codes of the steps
+		transition func(pipelines.State, pipelines.Result) pipelines.State
+		wantState  pipelines.State
+		wantErr    bool
+		wantJobs   string // states whose job ran, in order
+	}{
+		"all succeed":      {[]int{0, 0}, nil, pipelines.Succeeded, false, "running running succeeded "},
+		"default failure":  {[]int{0, 3, 0}, nil, pipelines.Failed, true, "running failed "},
+		"custom state":     {[]int{0, 3, 0}, byExitCode, "degraded", false, "running degraded degraded "},
+		"custom then fail": {[]int{3, 1, 0}, byExitCode, pipelines.Failed, true, "degraded failed "},
+		"early success":    {[]int{4, 1}, byExitCode, pipelines.Succeeded, false, "succeeded "},
+		"no steps":         {nil, nil, pipelines.Succeeded, false, "succeeded "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := logger(t)
+			p := pipelines.Pipeline{Name: "p", Transition: tc.transition}
+			for i, code := range tc.codes {
+				p.AddStep(exit(fmt.Sprint("step", i), code))
+			}
+			var jobs string
+			for _, state := range []pipelines.State{pipelines.Running, pipelines.Succeeded, pipelines.Failed, pipelines.Aborted, "degraded"} {
+				p.On(state, &pipelines.FuncStep{Name: "job", Fn: func(context.Context, *pipelines.StepWriter) error {
+					if p.State != state {
+						t.Errorf("job of %s ran in state %s", state, p.State)
+					}
+					jobs += string(state) + " "
+					return errors.New("a failing job changes nothing")
+				}})
+			}
+			err := p.Run(ctx)
+			if p.State != tc.wantState || (err != nil) != tc.wantErr || jobs != tc.wantJobs {
+				t.Fatalf("state=%s err=%v jobs=%q", p.State, err, jobs)
+			}
+		})
+	}
+}
+
+// TestAbortedJobs checks that a cancelled pipeline becomes Aborted and that its jobs still run to completion.
+func TestAbortedJobs(t *testing.T) {
+	base, _ := logger(t)
+	ctx, cancel := context.WithCancel(base)
+	cleaned := false
+	p := pipelines.Pipeline{Name: "p"}
+	p.AddFunc("wait", "", func(ctx context.Context, _ *pipelines.StepWriter) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	p.AddStep(exit("never", 0))
+	p.On(pipelines.Aborted, &pipelines.FuncStep{Name: "cleanup", Fn: func(ctx context.Context, sw *pipelines.StepWriter) error {
+		if err := (&pipelines.Command{Executable: "true"}).Execute(ctx, sw); err != nil { // would be killed if ctx were cancelled
+			return err
+		}
+		cleaned = true
+		return nil
+	}})
+	if err := p.Run(ctx); !errors.Is(err, context.Canceled) || p.State != pipelines.Aborted || !cleaned {
+		t.Fatalf("state=%s err=%v cleaned=%v", p.State, err, cleaned)
 	}
 }
 
@@ -182,7 +260,7 @@ func TestDemux(t *testing.T) {
 	}
 	for i, name := range []string{"alpha", "beta"} {
 		got, other := read(ps[i].GetLogFilePath()), []string{"beta", "alpha"}[i]
-		for _, want := range []string{"[" + name + "/work] " + name + " line 49\n", "[" + name + "/work] partial " + name + "\n", "event of " + name, "[" + name + "/work] no newline of " + name + "\n", "pipeline finished successfully"} {
+		for _, want := range []string{"[" + name + "/work] " + name + " line 49\n", "[" + name + "/work] partial " + name + "\n", "event of " + name, "[" + name + "/work] no newline of " + name + "\n", "state: succeeded"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s.log lacks %q", name, want)
 			}

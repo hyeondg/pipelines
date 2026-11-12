@@ -20,11 +20,12 @@ import (
 const All = "all"
 
 // record is what travels on a Logger's queue: a line of a stream, or, when
-// mark is set, the start (file) or the end (done) of a stream.
+// mark is set, a state change of its pipeline, which may also be the start
+// (file) or the end (done) of the stream.
 type record struct {
 	stream string          // pipeline name; "" for lines that only belong to All
 	line   string          // without the trailing newline
-	mark   string          // the stream's new status
+	mark   string          // the pipeline's new state, rendered for its tab
 	file   *os.File        // start: the stream's log file, owned by the demuxer from now on
 	done   chan<- struct{} // end: closed once the stream's file is complete
 }
@@ -96,6 +97,10 @@ func (l *Logger) demux(all *os.File) {
 	for r := range l.ch {
 		l.show(r)
 		switch {
+		case r.mark == "":
+			text := ansi.ReplaceAllString(r.line, "") + "\n"
+			all.WriteString(text)
+			files[r.stream].WriteString(text)
 		case r.file != nil:
 			files[r.stream].Close()
 			files[r.stream] = r.file
@@ -103,10 +108,6 @@ func (l *Logger) demux(all *os.File) {
 			files[r.stream].Close()
 			delete(files, r.stream)
 			close(r.done)
-		default:
-			text := ansi.ReplaceAllString(r.line, "") + "\n"
-			all.WriteString(text)
-			files[r.stream].WriteString(text)
 		}
 	}
 	all.Close()

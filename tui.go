@@ -8,12 +8,18 @@ import (
 	"github.com/awesome-gocui/gocui"
 )
 
-// Stream statuses, shown in front of the tab names.
-const (
-	running = "\x1b[33m*\x1b[0m"
-	passed  = "\x1b[32m✓\x1b[0m"
-	failed  = "\x1b[31m✗\x1b[0m"
-)
+// mark renders a pipeline's state for the front of its tab name.
+func mark(s State) string {
+	switch s {
+	case Running:
+		return "\x1b[33m*\x1b[0m"
+	case Succeeded:
+		return "\x1b[32m✓\x1b[0m"
+	case Failed:
+		return "\x1b[31m✗\x1b[0m"
+	}
+	return "\x1b[35m[" + string(s) + "]\x1b[0m"
+}
 
 const tabBar = "\x00tabs" // a view name no stream can have
 
@@ -22,7 +28,7 @@ const tabBar = "\x00tabs" // a view name no stream can have
 // touched from the gocui main loop.
 type tui struct {
 	tabs     []string          // stream names in order of appearance
-	marks    map[string]string // stream name -> status
+	marks    map[string]string // stream name -> rendered state
 	cur      int               // index of the selected tab
 	finished bool              // the Logger is closed: q now quits
 }
