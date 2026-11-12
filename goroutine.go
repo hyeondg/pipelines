@@ -5,14 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
-	"github.com/sirupsen/logrus"
 )
 
-// FuncStep represents an arbitrary Go function as a pipeline step.
-// The function receives a context for cancellation and a StepWriter for output.
+// FuncStep is a Step that calls a Go function.
 type FuncStep struct {
-	StepBase
 	Name        string
 	Description string
 	Fn          func(ctx context.Context, sw *StepWriter) error
@@ -20,7 +16,10 @@ type FuncStep struct {
 
 func (f *FuncStep) StepName() string        { return f.Name }
 func (f *FuncStep) StepDescription() string { return f.Description }
-func (f *FuncStep) FullName() string        { return f.StepBase.FullName(f.Name) }
+func (f *FuncStep) HelpInfo() string {
+	return fmt.Sprintf("%-10s %s [go func]\n", f.Name, f.Description)
+}
+
 func (f *FuncStep) Execute(ctx context.Context, sw *StepWriter) error {
 	if f.Fn == nil {
 		return fmt.Errorf("FuncStep '%s' has a nil function", f.Name)
@@ -28,105 +27,40 @@ func (f *FuncStep) Execute(ctx context.Context, sw *StepWriter) error {
 	return f.Fn(ctx, sw)
 }
 
-func (f *FuncStep) HelpInfo() string {
-	return fmt.Sprintf("%-10s %s [go func]\n", f.Name, f.Description)
-}
-
-// ConcurrentStep runs multiple Steps concurrently within a single pipeline slot.
-// All sub-steps must complete before the pipeline advances. If any sub-step fails,
-// the remaining ones are cancelled via context.
-//
-// MaxConcurrency caps the number of sub-steps that run simultaneously. When zero
-// or negative, all sub-steps run at once (unbounded). Use a positive value to
-// prevent goroutine explosion on large step slices.
+// ConcurrentStep is a Step that runs its sub-steps concurrently and completes
+// when all of them have. The first sub-step to fail cancels the others and its
+// error is returned; wrap a sub-step with WithPolicy to retry it or to tolerate
+// its failure.
 type ConcurrentStep struct {
-	StepBase
 	Name           string
 	Description    string
 	Steps          []Step
-	MaxConcurrency int // 0 = unbounded
+	MaxConcurrency int // sub-steps running at once; <= 0 means all of them
 }
 
 func (cs *ConcurrentStep) StepName() string        { return cs.Name }
 func (cs *ConcurrentStep) StepDescription() string { return cs.Description }
-func (cs *ConcurrentStep) FullName() string        { return cs.StepBase.FullName(cs.Name) }
+
 func (cs *ConcurrentStep) Execute(ctx context.Context, sw *StepWriter) error {
-	// Create a sub-context so we can cancel sibling steps on first failure.
-	subCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	limit := cs.MaxConcurrency
+	if limit <= 0 {
+		limit = len(cs.Steps)
+	}
+	slots := make(chan struct{}, limit)
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(cs.Steps))
-
-	// Reuse a parent spinner from context for tracking and log enrichment.
-	// Only start a new animated spinner if none exists in context.
-	spinner := SpinnerFromContext(ctx)
-	if spinner == nil {
-		spinner = NewMultiSpinner(sw.w)
-		// No spinner.Start() — animation is controlled by Pipeline.NoSpinner.
-		// Attach a progress hook so sub-step names appear in log lines.
-		defer addProgressHook(ctx, spinner)()
-	}
 	for _, s := range cs.Steps {
-		s.SetPipelineName(pipelineNameFromContext(ctx))
-		spinner.Add(s.FullName())
-	}
-
-	// sem is a semaphore channel that bounds the number of goroutines running
-	// simultaneously. A nil sem means unbounded (MaxConcurrency <= 0).
-	var sem chan struct{}
-	if cs.MaxConcurrency > 0 {
-		sem = make(chan struct{}, cs.MaxConcurrency)
-	}
-
-	for _, s := range cs.Steps {
-		wg.Add(1)
-		go func(step Step) {
-			defer wg.Done()
-			// Acquire semaphore slot (blocks if MaxConcurrency is reached).
-			if sem != nil {
-				sem <- struct{}{}
-				defer func() { <-sem }()
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			if err := runStep(ctx, Log(ctx), s, sw.sub(s.StepName()), Policy{}); err != nil {
+				cancel(fmt.Errorf("sub-step '%s': %w", s.StepName(), err))
 			}
-			// Each goroutine gets its own StepWriter sharing the parent mutex so
-			// that Flush calls are serialised against all other concurrent siblings.
-			childSW := newStepWriter(sw.w, sw.mu, pipelineNameFromContext(ctx), step.StepName())
-			if l := LoggerFromContext(subCtx); l != nil {
-				l.WithFields(logrus.Fields{
-					"pipeline": pipelineNameFromContext(ctx),
-					"step":     step.StepName(),
-				}).Debug("starting step")
-			}
-			if err := step.Execute(subCtx, childSW); err != nil {
-				cancel() // cancel siblings
-				if l := LoggerFromContext(subCtx); l != nil {
-					l.WithFields(logrus.Fields{
-						"pipeline": pipelineNameFromContext(ctx),
-						"step":     step.StepName(),
-						"error":    err,
-					}).Error("step failed")
-				}
-				errChan <- fmt.Errorf("sub-step '%s': %w", step.StepName(), err)
-			} else {
-				if l := LoggerFromContext(subCtx); l != nil {
-					l.WithFields(logrus.Fields{
-						"pipeline": pipelineNameFromContext(ctx),
-						"step":     step.StepName(),
-					}).Info("step completed")
-				}
-			}
-			spinner.Remove(step.FullName())
-		}(s)
+		})
 	}
 	wg.Wait()
-	close(errChan)
-	var errs []string
-	for err := range errChan {
-		errs = append(errs, err.Error())
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("concurrent step '%s' had failures:\n  - %s", cs.Name, strings.Join(errs, "\n  - "))
-	}
-	return nil
+	return context.Cause(ctx) // the first failure, the parent's cancellation, or nil
 }
 
 func (cs *ConcurrentStep) HelpInfo() string {

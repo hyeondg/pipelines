@@ -1,26 +1,23 @@
 // example demonstrates the pipelines package.
 //
-// It builds three pipelines:
-//
-//  1. "build"   - compiles the project with `go build`.
-//  2. "verify"  - runs vet and tests concurrently, with retry on the test step.
-//  3. "report"  - a pure-Go FuncStep that prints a summary.
-//
-// Pipelines 1 and 2 are executed sequentially (build must pass before verify).
-// A second run then executes all three concurrently to show RunPipelinesConcurrently.
-// A third demo runs two pipelines concurrently, each writing its output to a log file.
+// It runs "build" on its own and then "verify", "report" and "deploy"
+// concurrently. Each pipeline has its own tab in the terminal and its own log
+// file; the "all" tab and all.log carry everything.
 //
 // Run from the repo root:
 //
-//	go run ./example
+//	go run ./example          # gocui viewer
+//	go run ./example -plain   # plain lines on stdout
 package main
 
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,242 +27,141 @@ import (
 )
 
 func main() {
-	// Wire OS signals so Ctrl-C cancels the pipeline gracefully.
+	plain := flag.Bool("plain", false, "print the log to stdout instead of opening the viewer")
+	debug := flag.Bool("debug", false, "log at debug level")
+	flag.Parse()
+
+	// SIGINT and SIGTERM cancel the pipelines. In the viewer, so do q and Ctrl-C.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Inject a shared logrus logger so every pipeline step writes structured logs.
-	log := logrus.New()
-	log.SetOutput(os.Stdout)
-	log.SetFormatter(&pipelines.PipelineFormatter{})
-
-	// level
-	levels := map[string]logrus.Level{
-		"1": logrus.DebugLevel,
-		"2": logrus.InfoLevel,
-		"3": logrus.WarnLevel,
-		"4": logrus.ErrorLevel,
-		"5": logrus.FatalLevel,
-		"6": logrus.PanicLevel,
-	}
-
-	level, ok := levels[os.Getenv("DEBUG")]
-	if !ok {
-		level = logrus.InfoLevel
-	}
-
-	log.SetLevel(level)
-	ctx = pipelines.ContextWithLogger(ctx, log)
-
-	// -------------------------------------------------------------------------
-	// 1. Build pipeline – single Command step.
-	// -------------------------------------------------------------------------
-	buildPipeline := pipelines.Pipeline{
-		Name:        "buildPipeline",
-		Description: "Compile the module",
-		LogDir:      os.TempDir(),
-	}
-	buildPipeline.AddCommand(
-		pipelines.Command{
-			Name:        "buildStep",
-			Description: "compile all packages",
-			Executable:  "go",
-			Args:        []string{"build", "./..."},
-		})
-
-	// -------------------------------------------------------------------------
-	// 2. Verify pipeline – vet + test run concurrently; test step has retry.
-	// -------------------------------------------------------------------------
-	tmpDir, err := os.MkdirTemp("", "gocache-")
+	logDir, err := os.MkdirTemp("", "pipelines-*")
 	if err != nil {
-		log.Fatalf("failed to create temp dir: %v", err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	defer os.RemoveAll(tmpDir)
-
-	vetStep := pipelines.Command{
-		Name:        "vetStep",
-		Description: "static analysis",
-		Environment: map[string]string{
-			"GOCACHE": tmpDir,
-		},
-		Executable: "go",
-		Args:       []string{"vet", "./..."}, // set GOCACHE to isolate cache
+	ctx, log, err := pipelines.NewLogger(ctx, logDir, !*plain)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if *debug {
+		log.SetLevel(logrus.DebugLevel)
 	}
 
-	testStep := pipelines.Command{
-		Name:        "testStep",
-		Description: "run test suite",
-		Executable:  "go",
-		Args:        []string{"test", "-count=1", "."},
+	err = run(ctx, log)
+	log.Close() // in the viewer: returns once the user quits it
+	fmt.Println("logs are in", logDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
+}
 
-	echoStep := pipelines.Command{
-		Name:        "echoStep",
-		Description: "run bash echo",
-		Executable:  "echo",
-		Args:        []string{"\"Hello, world\""},
-	}
-
-	// Wrap the test step: retry up to 3 times with a 1 s fixed delay.
-	// Pass retry.Option values directly — no wrapper config needed.
-	retryTestStep := pipelines.WithRetry(
-		&testStep,
-		retry.Attempts(3),
-		retry.Delay(1*time.Second),
-		retry.DelayType(retry.FixedDelay),
-	)
-
-	concurrentVerify := &pipelines.ConcurrentStep{
-		Name:        "concurrent(vetStep, testStep, echoStep)",
-		Description: "run vet and tests at the same time",
-		Steps:       []pipelines.Step{&vetStep, &echoStep, &retryTestStep},
-	}
-
-	verifyPipeline := pipelines.Pipeline{
-		Name:        "verifyPipeline",
-		Description: "Static analysis and test suite",
-		LogDir:      os.TempDir(),
-	}
-	verifyPipeline.AddStep(concurrentVerify)
-
-	// -------------------------------------------------------------------------
-	// 3. Report pipeline – ConcurrentStep with two FuncSteps that both write
-	//    multi-line blocks with a sleep in the middle.
-	//    This tests atomicity: each block must appear whole, never interleaved.
-	// -------------------------------------------------------------------------
-
-	// blockStep returns a FuncStep that writes a labelled box, sleeping between
-	// the top and bottom halves to maximise the interleave window.
-	blockStep := func(label, symbol string, delay time.Duration) *pipelines.FuncStep {
-		return &pipelines.FuncStep{
-			Name:        label,
-			Description: "write a labelled result block",
-			Fn: func(_ context.Context, sw *pipelines.StepWriter) error {
-				fmt.Fprintf(sw, "\n[%s] starting...\n", label)
-				fmt.Fprintln(sw, "+------------------------------+")
-				fmt.Fprintf(sw, "|  %-28s|\n", label)
-				time.Sleep(delay)
-				fmt.Fprintf(sw, "|  result: %-20s|\n", symbol)
-				fmt.Fprintln(sw, "+------------------------------+")
-				return nil
+func run(ctx context.Context, log *pipelines.Logger) error {
+	// 1. build: a single command. Its pipeline policy registers callbacks; a
+	//    failure is reported and, as OnFailure says, aborts the pipeline.
+	build := pipelines.Pipeline{
+		Name:        "build",
+		Description: "Compile the module",
+		Policy: pipelines.Policy{
+			OnSuccess: func(ctx context.Context, s pipelines.Step) {
+				pipelines.Log(ctx).Infof("callback: %s succeeded", s.StepName())
 			},
-		}
+			OnFailure: func(ctx context.Context, s pipelines.Step, err error) pipelines.Action {
+				pipelines.Log(ctx).Errorf("callback: %s failed: %v", s.StepName(), err)
+				return pipelines.Abort
+			},
+		},
 	}
+	build.AddCommand(pipelines.Command{
+		Name:        "compile",
+		Description: "compile all packages",
+		Executable:  "go",
+		Args:        []string{"build", "./..."},
+	})
 
-	reportPipeline := pipelines.Pipeline{
-		Name:        "reportPipeline",
-		Description: "Print a post-run summary",
-		LogDir:      os.TempDir(),
-	}
-	reportPipeline.AddStep(&pipelines.ConcurrentStep{
-		Name:        "parallel-report",
-		Description: "two blocks written concurrently - must not interleave",
+	// 2. verify: vet, echo and the test suite at the same time; the tests are
+	//    retried up to three times, one second apart.
+	verify := pipelines.Pipeline{Name: "verify", Description: "Static analysis and test suite"}
+	verify.AddStep(&pipelines.ConcurrentStep{
+		Name:        "checks",
+		Description: "run vet, echo and tests at the same time",
 		Steps: []pipelines.Step{
-			blockStep("checks", "all passed", 2*time.Second),
-			blockStep("coverage", "87%", 1*time.Second),
+			&pipelines.Command{Name: "vet", Description: "static analysis", Executable: "go", Args: []string{"vet", "./..."}},
+			&pipelines.Command{Name: "echo", Description: "say hello", Executable: "echo", Args: []string{"Hello, world"}},
+			pipelines.WithRetry(
+				&pipelines.Command{Name: "test", Description: "run test suite", Executable: "go", Args: []string{"test", "-count=1", "."}},
+				retry.Attempts(3), retry.Delay(time.Second), retry.DelayType(retry.FixedDelay),
+			),
 		},
 	})
 
-	// -------------------------------------------------------------------------
-	// Demo A: sequential execution – build must pass before verify.
-	// -------------------------------------------------------------------------
-	fmt.Println("\n=== Demo A: sequential execution ===")
-	fmt.Println(buildPipeline.HelpText())
-
-	if err := buildPipeline.Run(ctx); err != nil {
-		log.WithError(err).Fatal("build pipeline failed")
-	}
-
-	fmt.Println(verifyPipeline.HelpText())
-	if err := verifyPipeline.Run(ctx); err != nil {
-		// Non-fatal: show the error and continue to the concurrent demo.
-		log.WithError(err).Error("verify pipeline failed")
-	}
-
-	// -------------------------------------------------------------------------
-	// Demo B: all three pipelines run concurrently.
-	// -------------------------------------------------------------------------
-	fmt.Println("\n=== Demo B: concurrent execution ===")
-
-	// Fresh pipeline instances so log files are recreated cleanly.
-	all := []pipelines.Pipeline{
-		{
-			Name:        "buildPipeline",
-			Description: "Compile (concurrent run)",
-			LogDir:      os.TempDir(),
-			Steps:       buildPipeline.Steps,
-		},
-		{
-			Name:        "verifyPipeline",
-			Description: "Verify (concurrent run)",
-			LogDir:      os.TempDir(),
-			Steps:       verifyPipeline.Steps,
-		},
-		{
-			Name:        "reportPipeline",
-			Description: "Report (concurrent run)",
-			LogDir:      os.TempDir(),
-			Steps:       reportPipeline.Steps,
-		},
-	}
-
-	for _, pipeline := range all {
-		fmt.Println(pipeline.HelpText())
-	}
-
-	err = pipelines.RunPipelinesConcurrently(ctx, all, pipelines.ContinueOnError())
-	if err != nil {
-		// Unwrap multi-pipeline errors to decide on exit code.
-		log.WithError(err).Error("one or more concurrent pipelines failed")
-		if !errors.Is(err, context.Canceled) {
-			os.Exit(1)
-		}
-	}
-
-	// -------------------------------------------------------------------------
-	// Demo C: two pipelines running concurrently, each writing to its own log file.
-	// -------------------------------------------------------------------------
-	fmt.Println("\n=== Demo C: concurrent pipelines with per-pipeline log files ===")
-
-	logDir, err := os.MkdirTemp("", "pipelines-demo-c-*")
-	if err != nil {
-		log.WithError(err).Fatal("failed to create log dir")
-	}
-
-	// slowStep returns a FuncStep that writes several lines with pauses between
-	// them so the two pipelines genuinely overlap in time.
-	slowStep := func(name, tag string) *pipelines.FuncStep {
+	// 3. report: two Go functions writing slowly at the same time.
+	slow := func(name string, pause time.Duration) *pipelines.FuncStep {
 		return &pipelines.FuncStep{
 			Name:        name,
-			Description: "writes output slowly to demonstrate concurrent log files",
-			Fn: func(_ context.Context, sw *pipelines.StepWriter) error {
+			Description: "write a few lines slowly",
+			Fn: func(ctx context.Context, sw *pipelines.StepWriter) error {
 				for i := 1; i <= 5; i++ {
-					fmt.Fprintf(sw, "%s: line %d/5\n", tag, i)
-					time.Sleep(300 * time.Millisecond)
+					fmt.Fprintf(sw, "line %d/5\n", i)
+					select {
+					case <-time.After(pause):
+					case <-ctx.Done():
+						return ctx.Err()
+					}
 				}
 				return nil
 			},
 		}
 	}
+	report := pipelines.Pipeline{Name: "report", Description: "Print a post-run summary"}
+	report.AddStep(&pipelines.ConcurrentStep{
+		Name:        "summaries",
+		Description: "two writers at the same time",
+		Steps:       []pipelines.Step{slow("checks", 400*time.Millisecond), slow("coverage", 250*time.Millisecond)},
+	})
 
-	alpha := pipelines.Pipeline{
-		Name:        "alphaPipeline",
-		Description: "first concurrent pipeline",
-		LogDir:      logDir,
+	// 4. deploy: one policy per way of handling a failure.
+	var uploads atomic.Int32
+	deploy := pipelines.Pipeline{Name: "deploy", Description: "Failure policies"}
+	deploy.AddStep(pipelines.WithPolicy( // retry: succeeds at the third attempt
+		&pipelines.FuncStep{Name: "upload", Description: "flaky upload", Fn: func(_ context.Context, sw *pipelines.StepWriter) error {
+			if n := uploads.Add(1); n < 3 {
+				return fmt.Errorf("connection reset (attempt %d)", n)
+			}
+			fmt.Fprintln(sw, "uploaded")
+			return nil
+		}},
+		pipelines.Policy{Retry: []retry.Option{retry.Attempts(5), retry.Delay(500 * time.Millisecond), retry.DelayType(retry.FixedDelay)}},
+	))
+	deploy.AddStep(pipelines.WithPolicy( // continue: the failure is logged and ignored
+		&pipelines.Command{Name: "notify", Description: "optional notification", Executable: "false"},
+		pipelines.Policy{OnFailure: pipelines.Always(pipelines.Continue)},
+	))
+	deploy.AddStep(pipelines.WithPolicy( // failure callback, then abort
+		&pipelines.FuncStep{Name: "smoke", Description: "smoke test", Fn: func(context.Context, *pipelines.StepWriter) error {
+			return errors.New("health check returned 503")
+		}},
+		pipelines.Policy{OnFailure: func(ctx context.Context, s pipelines.Step, err error) pipelines.Action {
+			pipelines.Log(ctx).Warnf("callback: rolling back after %s: %v", s.StepName(), err)
+			return pipelines.Abort
+		}},
+	))
+	deploy.AddFunc("announce", "never reached", func(_ context.Context, sw *pipelines.StepWriter) error {
+		fmt.Fprintln(sw, "deployed")
+		return nil
+	})
+
+	all := []pipelines.Pipeline{verify, report, deploy}
+	for _, p := range append([]pipelines.Pipeline{build}, all...) {
+		log.Info(p.HelpText())
 	}
-	alpha.AddStep(slowStep("alpha-work", "alpha"))
 
-	beta := pipelines.Pipeline{
-		Name:        "betaPipeline",
-		Description: "second concurrent pipeline",
-		LogDir:      logDir,
+	// Sequential: build must pass before anything else starts.
+	if err := build.Run(ctx); err != nil {
+		return err
 	}
-	beta.AddStep(slowStep("beta-work", "beta"))
-
-	if err := pipelines.RunPipelinesConcurrently(ctx, []pipelines.Pipeline{alpha, beta}); err != nil {
-		log.WithError(err).Error("demo C failed")
-	}
-
-	fmt.Printf("\nalpha log: %s\n", alpha.GetLogFilePath())
-	fmt.Printf("beta  log: %s\n", beta.GetLogFilePath())
+	// Concurrent: a failing pipeline does not stop the others.
+	return pipelines.RunPipelinesConcurrently(ctx, all, pipelines.ContinueOnError())
 }

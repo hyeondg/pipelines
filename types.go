@@ -3,174 +3,71 @@ package pipelines
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 )
 
-// StepWriter is the output handle passed to every Execute call.
-// Every Write acquires a shared lock so concurrent steps never interleave output.
-// Each line is automatically prefixed with "[pipeline/step] " so all output is
-// attributed without the step function needing to know its own name.
-type StepWriter struct {
-	mu     *sync.Mutex
-	w      io.Writer
-	prefix []byte // prepended to every line
-}
-
-// New creates a StepWriter that writes to w. When multiple StepWriters share
-// the same *sync.Mutex, their writes are serialised against each other.
-func New(w io.Writer) *StepWriter {
-	return &StepWriter{w: w, mu: new(sync.Mutex)}
-}
-
-// Write serialises p to the underlying writer under the shared lock, prepending
-// the configured prefix to every newline-delimited line.
-func (sw *StepWriter) Write(p []byte) (int, error) {
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-	if len(sw.prefix) == 0 {
-		return sw.w.Write(p)
-	}
-	// Prepend prefix to each line. We iterate over newline boundaries so that a
-	// single Write call containing multiple lines gets every line prefixed.
-	total := len(p)
-	for len(p) > 0 {
-		idx := bytes.IndexByte(p, '\n')
-		var line []byte
-		if idx >= 0 {
-			line = p[:idx+1] // includes the '\n'
-			p = p[idx+1:]
-		} else {
-			line = p
-			p = nil
-		}
-		// Skip prefix-only lines (bare newlines from spacing).
-		if len(bytes.TrimSpace(line)) == 0 {
-			if _, err := sw.w.Write(line); err != nil {
-				return 0, err
-			}
-			continue
-		}
-		if _, err := sw.w.Write(sw.prefix); err != nil {
-			return 0, err
-		}
-		if _, err := sw.w.Write(line); err != nil {
-			return 0, err
-		}
-	}
-	return total, nil
-}
-
-// Flush is a no-op retained for API compatibility.
-func (sw *StepWriter) Flush() error { return nil }
-
-type stepWriterKeyType struct{}
-
-var stepWriterKey stepWriterKeyType
-
-func contextWithStepWriter(ctx context.Context, sw *StepWriter) context.Context {
-	return context.WithValue(ctx, stepWriterKey, sw)
-}
-
-func stepWriterFromContext(ctx context.Context) *StepWriter {
-	sw, _ := ctx.Value(stepWriterKey).(*StepWriter)
-	return sw
-}
-
-type sharedMuKeyType struct{}
-
-var sharedMuKey sharedMuKeyType
-
-// contextWithSharedMu stores a shared sync.Mutex in ctx so concurrent pipelines
-// all serialise their StepWriter.Flush calls against the same lock.
-func contextWithSharedMu(ctx context.Context, mu *sync.Mutex) context.Context {
-	return context.WithValue(ctx, sharedMuKey, mu)
-}
-
-// sharedMuFromContext retrieves the shared mutex from ctx, or nil if none.
-func sharedMuFromContext(ctx context.Context) *sync.Mutex {
-	mu, _ := ctx.Value(sharedMuKey).(*sync.Mutex)
-	return mu
-}
-
-type pipelineNameKeyType struct{}
-
-var pipelineNameKey pipelineNameKeyType
-
-// contextWithPipelineName stores the current pipeline name so sub-steps can
-// build "pipeline/step" labels for the running field.
-func contextWithPipelineName(ctx context.Context, name string) context.Context {
-	return context.WithValue(ctx, pipelineNameKey, name)
-}
-
-// pipelineNameFromContext returns the pipeline name stored in ctx, or "".
-func pipelineNameFromContext(ctx context.Context) string {
-	name, _ := ctx.Value(pipelineNameKey).(string)
-	return name
-}
-
-// newStepWriter creates a StepWriter that writes to w under mu, prefixing every
-// line with "[pipelineName/stepName] ".
-func newStepWriter(w io.Writer, mu *sync.Mutex, pipeline, step string) *StepWriter {
-	var prefix []byte
-	if pipeline != "" || step != "" {
-		label := step
-		if pipeline != "" {
-			label = pipeline + "/" + step
-		}
-		prefix = []byte("[" + label + "] ")
-	}
-	return &StepWriter{w: w, mu: mu, prefix: prefix}
-}
-
-// Step is the interface that all pipeline steps must satisfy.
+// Step is one unit of work in a Pipeline. Execute reports failure by returning
+// an error; what happens next is decided by the Policy the step runs under.
 type Step interface {
 	StepName() string
 	StepDescription() string
-	Execute(ctx context.Context, sw *StepWriter) error
 	HelpInfo() string
-
-	// SetPipelineName stores the owning pipeline's name so the step can
-	// report its full qualified name via FullName.
-	SetPipelineName(name string)
-
-	// FullName returns "pipelineName/stepName", or just stepName when the
-	// pipeline name has not been set yet.
-	FullName() string
-
-	// SetIndex records the step's zero-based position within its pipeline.
-	SetIndex(i int)
-
-	// Index returns the step's zero-based position within its pipeline.
-	// Returns -1 if the step has not been assigned to a pipeline yet.
-	Index() int
+	Execute(ctx context.Context, sw *StepWriter) error
 }
 
-// StepBase is a zero-size embeddable struct that satisfies the SetPipelineName
-// and FullName methods of the Step interface. Embed it in every concrete step
-// type to avoid repeating this boilerplate:
-//
-//	type MyStep struct {
-//	    pipelines.StepBase
-//	    // ...
-//	}
-type StepBase struct {
-	pipelineName string
-	index        int
+// StepWriter is the output handle passed to every Execute call. It cuts what
+// is written into lines, tags them "[pipeline/step] " and queues them on the
+// Logger. It is safe for concurrent use.
+type StepWriter struct {
+	mu             sync.Mutex
+	buf            []byte // unterminated tail of the last Write
+	pipeline, step string
+	emit           func(line string)
 }
 
-func (b *StepBase) SetPipelineName(name string) { b.pipelineName = name }
+// New returns a StepWriter that prints its lines to w instead of a Logger,
+// which is handy for running a Step on its own.
+func New(w io.Writer) *StepWriter {
+	return &StepWriter{emit: func(line string) { fmt.Fprintln(w, line) }}
+}
 
-func (b *StepBase) FullName(stepName string) string {
-	if b.pipelineName == "" {
-		return stepName
+// sub returns a writer for another step that feeds the same sink.
+func (sw *StepWriter) sub(step string) *StepWriter {
+	return &StepWriter{pipeline: sw.pipeline, step: step, emit: sw.emit}
+}
+
+func (sw *StepWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	sw.buf = append(sw.buf, p...)
+	for {
+		line, rest, found := bytes.Cut(sw.buf, []byte("\n"))
+		if !found {
+			return len(p), nil
+		}
+		sw.put(line)
+		sw.buf = rest
 	}
-	return b.pipelineName + "/" + stepName
 }
 
-func (b *StepBase) SetIndex(i int) { b.index = i }
+// Flush emits a trailing line that was not terminated by a newline.
+func (sw *StepWriter) Flush() error {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if len(sw.buf) > 0 {
+		sw.put(sw.buf)
+		sw.buf = nil
+	}
+	return nil
+}
 
-// Index returns the step's zero-based position within its pipeline.
-// Returns -1 if SetIndex has never been called (zero-value is 0, which is
-// a valid index, so unset is represented by -1 via the initialiser below).
-func (b *StepBase) Index() int { return b.index - 1 }
+func (sw *StepWriter) put(line []byte) {
+	s := strings.TrimRight(string(line), "\r")
+	if tag := strings.Trim(sw.pipeline+"/"+sw.step, "/"); tag != "" && strings.TrimSpace(s) != "" {
+		s = "[" + tag + "] " + s
+	}
+	sw.emit(s)
+}

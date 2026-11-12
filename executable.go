@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -21,9 +20,8 @@ type Option struct {
 	Value       string
 }
 
-// Command represents an external command step.
+// Command is a Step that runs an external command.
 type Command struct {
-	StepBase
 	Name        string
 	Description string
 	Environment map[string]string
@@ -32,22 +30,19 @@ type Command struct {
 	Options     []Option
 }
 
-func (c *Command) AddOption(opt Option) {
-	c.Options = append(c.Options, opt)
-}
+func (c *Command) AddOption(opt Option) { c.Options = append(c.Options, opt) }
 
 func (c *Command) BuildArgs() []string {
-	args := make([]string, 0, len(c.Args)+len(c.Options)*2)
-	args = append(args, c.Args...)
+	args := append([]string{}, c.Args...)
 	for _, opt := range c.Options {
 		flag := opt.Long
 		if flag == "" {
 			flag = opt.Short
 		}
-		if opt.HasValue && opt.Value != "" {
-			args = append(args, flag, opt.Value)
-		} else if !opt.HasValue {
+		if !opt.HasValue {
 			args = append(args, flag)
+		} else if opt.Value != "" {
+			args = append(args, flag, opt.Value)
 		}
 	}
 	return args
@@ -55,34 +50,26 @@ func (c *Command) BuildArgs() []string {
 
 func (c *Command) StepName() string        { return c.Name }
 func (c *Command) StepDescription() string { return c.Description }
-func (c *Command) FullName() string        { return c.StepBase.FullName(c.Name) }
+
+// Execute runs the command with its output sent to sw. On cancellation the
+// process is interrupted and, if it lingers, killed five seconds later.
 func (c *Command) Execute(ctx context.Context, sw *StepWriter) error {
 	args := c.BuildArgs()
-	if l := LoggerFromContext(ctx); l != nil {
-		l.WithFields(logrus.Fields{
-			"step":        c.Name,
-			"environment": c.Environment,
-			"executable":  c.Executable,
-			"args":        strings.Join(args, " "),
-		}).Debug("executing command")
-	}
-	execCmd := exec.CommandContext(ctx, c.Executable, args...)
-	// Route subprocess output through the StepWriter buffer so that output is
-	// flushed atomically after the command completes.
-	execCmd.Stdout = sw
-	execCmd.Stderr = sw
-	execCmd.Cancel = func() error {
-		return execCmd.Process.Signal(syscall.SIGINT)
-	}
-	execCmd.WaitDelay = 5 * time.Second
-	// Environment variables
-	execCmd.Env = os.Environ()
+	Log(ctx).WithFields(logrus.Fields{
+		"step":        c.Name,
+		"environment": c.Environment,
+		"executable":  c.Executable,
+		"args":        strings.Join(args, " "),
+	}).Debug("executing command")
+	cmd := exec.CommandContext(ctx, c.Executable, args...)
+	cmd.Stdout, cmd.Stderr = sw, sw
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Env = os.Environ()
 	for k, v := range c.Environment {
-		execCmd.Env = append(execCmd.Env, fmt.Sprintf("%s=%s", k, v))
+		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-
-	err := execCmd.Run()
-	return err
+	return cmd.Run()
 }
 
 func (c *Command) HelpInfo() string {
@@ -90,13 +77,13 @@ func (c *Command) HelpInfo() string {
 	fmt.Fprintf(&sb, "%-10s %s\n", c.Name, c.Description)
 	if len(c.Options) > 0 {
 		fmt.Fprintf(&sb, "     Options:\n")
-		for _, opt := range c.Options {
-			fmt.Fprintf(&sb, "       %-6s %-12s %s", opt.Short, opt.Long, opt.Description)
-			if opt.HasValue && opt.Value != "" {
-				fmt.Fprintf(&sb, " (value: %s)", opt.Value)
-			}
-			fmt.Fprintf(&sb, "\n")
+	}
+	for _, opt := range c.Options {
+		fmt.Fprintf(&sb, "       %-6s %-12s %s", opt.Short, opt.Long, opt.Description)
+		if opt.HasValue && opt.Value != "" {
+			fmt.Fprintf(&sb, " (value: %s)", opt.Value)
 		}
+		fmt.Fprintln(&sb)
 	}
 	return sb.String()
 }
