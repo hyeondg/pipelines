@@ -137,6 +137,13 @@ type Step interface {
 	// FullName returns "pipelineName/stepName", or just stepName when the
 	// pipeline name has not been set yet.
 	FullName() string
+
+	// SetIndex records the step's zero-based position within its pipeline.
+	SetIndex(i int)
+
+	// Index returns the step's zero-based position within its pipeline.
+	// Returns -1 if the step has not been assigned to a pipeline yet.
+	Index() int
 }
 
 // StepBase is a zero-size embeddable struct that satisfies the SetPipelineName
@@ -149,6 +156,7 @@ type Step interface {
 //	}
 type StepBase struct {
 	pipelineName string
+	index        int
 }
 
 func (b *StepBase) SetPipelineName(name string) { b.pipelineName = name }
@@ -159,3 +167,10 @@ func (b *StepBase) FullName(stepName string) string {
 	}
 	return b.pipelineName + "/" + stepName
 }
+
+func (b *StepBase) SetIndex(i int) { b.index = i }
+
+// Index returns the step's zero-based position within its pipeline.
+// Returns -1 if SetIndex has never been called (zero-value is 0, which is
+// a valid index, so unset is represented by -1 via the initialiser below).
+func (b *StepBase) Index() int { return b.index - 1 }

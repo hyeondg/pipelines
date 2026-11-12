@@ -133,8 +133,9 @@ func (p *Pipeline) RunWithWriter(ctx context.Context, w io.Writer) error {
 			}
 			return fmt.Errorf("pipeline '%s' cancelled: %w", pipelineColor(p.Name), err)
 		}
-		// Stamp the owning pipeline name onto the step so FullName() works.
+		// Stamp the owning pipeline name and index onto the step.
 		step.SetPipelineName(p.Name)
+		step.SetIndex(i)
 		if l != nil {
 			l.WithFields(logrus.Fields{
 				"pipeline": p.Name,
